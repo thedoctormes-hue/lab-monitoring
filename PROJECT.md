@@ -1,7 +1,7 @@
 ---
 name: Lab Monitoring
 owner: DoctorM&Ai
-type: monitoring
+type: devtools
 status: active
 priority: high
 stack: [Python, pytest, systemd]
