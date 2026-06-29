@@ -26,3 +26,71 @@ logs/
 
 # Node
 node_modules/
+.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+.next/
+.cache/
+.tox/
+.ruff_cache/
+*.egg-info/
+.npm/
+.yarn/
+.pnp
+.pnp.js
+vendor/
+.tmp/
+temp/
+*.log
+.DS_Store
+Thumbs.db
+*.swo
+*~
+
+# === Build artifacts ===
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.tox/
+*.egg-info/
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+
+# === Temp ===
+.cache/
+.tmp/
+tmp/
+
+# === Backup artifacts ===
+.backupignore
+
+# Secrets
+*.key
+*.pem
+*.p12
