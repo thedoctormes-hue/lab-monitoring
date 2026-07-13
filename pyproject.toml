@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lab-monitoring"
+version = "1.0.0"
+description = "Lab infrastructure monitoring — services, agents, projects, backups, CVE."
+requires-python = ">=3.10"
+dependencies = ["loguru"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["lab_monitoring"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

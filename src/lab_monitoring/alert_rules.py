@@ -11,8 +11,10 @@ Best practices applied from research (2025-2026):
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
+
+from lab_monitoring.thresholds import AlertConfig
 
 
 @dataclass
@@ -33,46 +35,9 @@ class Alert:
         }
 
 
-@dataclass
-class AlertConfig:
-    """Thresholds for alerting. Tuned for a single-server lab setup."""
-    # Disk: alert before it's too late. 80% = warning, 90% = critical
-    disk_warn_pct: float = 80.0
-    disk_critical_pct: float = 90.0
-
-    # Memory: Linux uses cache/buffers, so available RAM matters more than used
-    # Warning at 85% used, critical at 95%
-    mem_warn_pct: float = 85.0
-    mem_critical_pct: float = 95.0
-
-    # Load: alert when load exceeds 2x CPU cores for sustained periods
-    # (Research: load > cores = processes waiting, 2x = serious)
-    load_warn_multiplier: float = 2.0
-    load_critical_multiplier: float = 4.0
-
-    # Swap: any notable swap usage on a server with 7.8G RAM is a warning sign
-    swap_warn_pct: float = 10.0
-    swap_critical_pct: float = 30.0
-
-    # Inodes: can run out even with free disk space (many small files)
-    inode_warn_pct: float = 70.0
-    inode_critical_pct: float = 85.0
-
-    # Docker: container down or unhealthy
-    # (Check status string for "unhealthy" or missing containers)
-
-    # Systemd: any new failed service is at least WARNING
-    # Critical if known production service is down
-
-    # PostgreSQL: connection failures, replication lag (if applicable)
-    pg_conn_critical: bool = True
-
-    # OLLAMA: API unavailable (blocks LLM features)
-    ollama_critical: bool = True
-
-    # Journal: high error rate in last hour (>10 errors/min sustained)
-    journal_err_warn_per_min: float = 10.0
-    journal_err_critical_per_min: float = 50.0
+# Thresholds live in a single shared module so that src/lab_monitoring and
+# bin/lab-monitor.py (Доминики ЛабМонитор) never diverge on numbers.
+# (AlertConfig is imported at the top of this file.)
 
 
 def get_cpu_count() -> int:

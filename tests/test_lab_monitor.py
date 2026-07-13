@@ -7,7 +7,9 @@ import os
 import tempfile
 
 SPEC = importlib.util.spec_from_file_location(
-    "lab_monitor", "/root/LabDoctorM/projects/mcp-tools/bin/lab-monitor.py")
+    "lab_monitor",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 "bin", "lab-monitor.py"))
 M = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(M)
 
