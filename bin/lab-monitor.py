@@ -23,6 +23,9 @@ import socket
 import subprocess
 import sys
 
+PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.join(PARENT, "src"))  # import lab_monitoring (единый источник порогов) при запуске как скрипта
+
 WORKSPACES = "/root/LabDoctorM/workspaces"
 PROJECTS   = "/root/LabDoctorM/projects"
 STATE_DIR  = "/root/LabDoctorM/workspaces/dominika/monitor-state"
@@ -45,6 +48,8 @@ THRESHOLDS = {
     "nrestarts_window_auto_ok": 0,  # авто-перезапусков (systemd сам поднял после падения) за окно: норма 0; >=1 → 🔴 подозрительно. Ручные рестарты ЗавЛаб знает/ожидает; авто = нежданное падение.
     "load_warn_x": 1.0,     # load1 < ядер            = ок
     "load_high_x": 2.0,     # load1 < 2×ядер          = повышенная (не сбой); >=2×ядер = тревога
+    "mem_warn_pct": 85,     # RAM used >=85%          = внимание (Linux кэширует; важен available)
+    "mem_crit_pct": 95,     # RAM used >=95%          = тревога (ОЗУ почти исчерпано)
 }
 
 # --- Синхронизация с единым источником порогов (src/lab_monitoring/thresholds.py) ---
@@ -55,6 +60,8 @@ try:
     _cfg = _AlertConfig()
     THRESHOLDS["disk_warn_pct"] = int(_cfg.disk_warn_pct)
     THRESHOLDS["disk_crit_pct"] = int(_cfg.disk_critical_pct)
+    THRESHOLDS["mem_warn_pct"] = int(_cfg.mem_warn_pct)
+    THRESHOLDS["mem_crit_pct"] = int(_cfg.mem_critical_pct)
 except Exception:
     pass
 
@@ -62,6 +69,25 @@ except Exception:
 ADVISE_COOLDOWN_S = 6 * 3600   # повторный совет по тому же ключу не раньше чем через 6ч
 ADVISE_CIRCUIT_K  = 3          # после 3-х советов подряд — circuit-breaker (стоп)
 ADVICE_STATE_FILE = os.path.join(STATE_DIR, "advice_state.json")
+
+# === ДИЗАЙН-АПГРЕЙД (DDP 2026-07-13, Тир 1+2): severity-тиры + тренд ===
+# Иконки статуса категорий: ок / внимание / тревога (3-значный статус).
+ICON = {True: "✅", "warn": "⚠️", False: "🔴"}
+OVERALL_EMOJI = {"OK": "🟢", "ВНИМАНИЕ": "🟡", "ТРЕВОГА": "🔴"}
+
+# Файл истории метрик для дельт и sparkline (текстовых трендов).
+METRICS_HISTORY_FILE = os.path.join(STATE_DIR, "lab-monitor-metrics.json")
+HISTORY_MAX = 48  # ~2 суток при часовом кроне
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def worst(*states):
+    """Худший из статусов: False < 'warn' < True."""
+    if any(s is False for s in states):
+        return False
+    if any(s == "warn" for s in states):
+        return "warn"
+    return True
 
 
 def load_advice_state():
@@ -413,9 +439,21 @@ def cat_data():
     df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
     disk = df.stdout.strip() if df else "?"
     pct = int(disk.rstrip("%")) if disk and disk.rstrip("%").isdigit() else 0
-    ok = pg_up and sq_ok and pct < THRESHOLDS["disk_warn_pct"]
-    disk_hint = "ок" if pct < THRESHOLDS["disk_warn_pct"] else ("тревога" if pct < THRESHOLDS["disk_crit_pct"] else "КРИТ")
-    return ok, f"PostgreSQL {'up' if pg_up else 'DOWN'}; disk {disk} (норма <{THRESHOLDS['disk_warn_pct']}% — {disk_hint})", out
+    warn = THRESHOLDS["disk_warn_pct"]    # 80
+    crit = THRESHOLDS["disk_crit_pct"]    # 90
+    if pct >= crit:
+        disk_status = False
+        disk_hint = f"КРИТ (≥{crit}%)"
+    elif pct >= warn:
+        disk_status = "warn"
+        disk_hint = f"⚠️ близко к порогу (≥{warn}%)"
+    else:
+        disk_status = True
+        disk_hint = "ок"
+    db_status = True if (pg_up and sq_ok) else False
+    status = worst(db_status, disk_status)
+    summary = f"PostgreSQL {'up' if pg_up else 'DOWN'}; disk {disk} (норма <{warn}% — {disk_hint})"
+    return status, summary, out
 
 
 def cat_network():
@@ -521,49 +559,66 @@ def cat_host():
     lw, lh = THRESHOLDS["load_warn_x"], THRESHOLDS["load_high_x"]
     if load1 < ncores*lw:
         load_hint = "ок"
+        load_status = True
     elif load1 < ncores*lh:
         load_hint = "повышенная"
+        load_status = "warn"
     else:
         load_hint = "ВЫСОКАЯ"
+        load_status = False
     pct = round(load1 / ncores * 100) if ncores else 0
     out.append(f"ядер CPU: {cores} (нагрузка {load1} из {cores} = {pct}%, норма <100%)")
-    ok = load1 < ncores*lh  # тревога только при load1 ≥ lh×ядер
+    # RAM: used/total; важен available, но для порога берём used% (Linux кэширует)
+    try:
+        ram_pct = round(int(used) / int(total) * 100) if (str(total).isdigit() and int(total) > 0) else 0
+    except Exception:
+        ram_pct = 0
+    mw, mc = THRESHOLDS["mem_warn_pct"], THRESHOLDS["mem_crit_pct"]
+    if ram_pct >= mc:
+        ram_hint = f"ВЫСОКАЯ (≥{mc}%)"
+        ram_status = False
+    elif ram_pct >= mw:
+        ram_hint = f"⚠️ повышенная (≥{mw}%)"
+        ram_status = "warn"
+    else:
+        ram_hint = "ок"
+        ram_status = True
+    out.append(f"RAM: {ram} — used {used}; free {free_m}; buff/cache {buff}; available {avail} MB ({ram_pct}% used)")
+    status = worst(load_status, ram_status)
     summary = (f"нагрузка CPU {load1} из {cores} ядер (~{pct}%, {load_hint}); "
-               f"память {ram} (доступно {avail} MB); контейнеры {cont} запущено")
-    return ok, summary, out
+               f"память {ram} ({ram_pct}% used, {ram_hint}; доступно {avail} MB); контейнеры {cont} запущено")
+    return status, summary, out
 
 
 def self_factcheck(results):
     """Встроенный гард честности. Ловит самого себя: противоречие между
-    заголовком (summary/✅) и деталями/порогами. Без этого монитор может
+    заголовком (summary/иконка) и деталями/порогами. Без этого монитор может
     выдать ✅ при значении вне нормы или при расхождении заголовок↔детали."""
     problems = []
-    for cid, name, ok, summary, details in results:
+    for cid, name, status, summary, details in results:
         det = "\n".join(details)
         if cid == 2:
-            if ok and "DOWN" in summary:
+            if status is True and "DOWN" in summary:
                 problems.append(f"{name}: ✅ но gateway DOWN")
-            if ok and "АВТО-перезапусков за" in summary:
-                problems.append(f"{name}: ✅ но АВТО-перезапусков за окно (не должно быть при ok)")
-            if ok and "НОВЫХ замечаний" in summary:
-                problems.append(f"{name}: ✅ но есть НОВЫЕ замечания доктора")
+            if status is True and "АВТО-перезапуск" in summary:
+                problems.append(f"{name}: ✅ но АВТО-перезапуск за окно (не должно быть при ok)")
         elif cid == 3:
             m = re.search(r"(\d+)/(\d+) работают", summary)
-            if m and int(m.group(1)) != int(m.group(2)) and ok:
+            if m and int(m.group(1)) != int(m.group(2)) and status is True:
                 problems.append(f"{name}: ✅ но {m.group(1)}/{m.group(2)} работают")
-            if ok and "DOWN" in det:
+            if status is True and "DOWN" in det:
                 problems.append(f"{name}: ✅ но есть DOWN в деталях")
         elif cid == 4:
-            if ok and ("DOWN" in det or "FAIL" in det or "FAIL" in summary):
+            if status is True and ("DOWN" in det or "FAIL" in det or "FAIL" in summary):
                 problems.append(f"{name}: ✅ но FAIL/DOWN в данных")
         elif cid == 5:
             m = re.search(r"disk (\d+)%", summary)
-            if m and int(m.group(1)) >= THRESHOLDS["disk_warn_pct"] and ok:
+            if m and int(m.group(1)) >= THRESHOLDS["disk_warn_pct"] and status is True:
                 problems.append(f"{name}: ✅ но disk {m.group(1)}% (норма <{THRESHOLDS['disk_warn_pct']})")
-            if ok and "DOWN" in summary:
+            if status is True and "DOWN" in summary:
                 problems.append(f"{name}: ✅ но PostgreSQL DOWN")
         elif cid == 6:
-            if ok and ("DOWN" in det or "FAIL" in det or "DOWN" in summary or "FAIL" in summary):
+            if status is True and ("DOWN" in det or "FAIL" in det or "DOWN" in summary or "FAIL" in summary):
                 problems.append(f"{name}: ✅ но DOWN/FAIL в данных")
         elif cid == 8:
             m = re.search(r"1мин ([\d.]+)", summary)
@@ -571,7 +626,7 @@ def self_factcheck(results):
             if m and cm:
                 l1 = float(m.group(1))
                 cores = int(cm.group(1))
-                if l1 >= THRESHOLDS["load_high_x"] * cores and ok:
+                if l1 >= THRESHOLDS["load_high_x"] * cores and status is True:
                     problems.append(f"{name}: ✅ но load1 {l1} ≥ тревожного {THRESHOLDS['load_high_x']*cores}")
     return problems
 
@@ -640,15 +695,15 @@ def selftest_report():
     results = []
     for cid, name, fn in CATEGORIES:
         try:
-            ok, summary, details = fn()
+            status, summary, details = fn()
         except Exception as e:
-            ok, summary, details = False, f"ERROR: {e}", []
-        results.append((cid, name, ok, summary, details))
+            status, summary, details = False, f"ERROR: {e}", []
+        results.append((cid, name, status, summary, details))
     probe = independent_probe()
     lines = ["🦊 ЛабМонитор · САМОПРОВЕРКА (--selftest)", ""]
-    for cid, name, ok, summary, details in results:
+    for cid, name, status, summary, details in results:
         lines.append(f"[{cid}] {name}")
-        lines.append(f"   монитор : {'✅' if ok else '🔴'} {summary}")
+        lines.append(f"   монитор : {ICON[status]} {summary}")
         lines.append(f"   независ. : {probe.get(cid, '—')}")
     sf = self_factcheck(results)
     lines.append("")
@@ -673,24 +728,184 @@ CATEGORIES = [
 ]
 
 
+# ---------- Метрики + история для тренда (Тир 2, DDP 2026-07-13) ----------
+def collect_metrics():
+    """Независимый замер ключевых сигналов для дельт/sparkline.
+    Дёшево (для часового крона ок); не зависит от человекочитаемых summary категорий."""
+    m = {}
+    df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
+    disk = df.stdout.strip() if df else "?"
+    m["disk_pct"] = int(disk.rstrip("%")) if disk and disk.rstrip("%").isdigit() else 0
+    la = run("cat /proc/loadavg | awk '{print $1}'", timeout=5)
+    ncpu = run("nproc", timeout=5)
+    cores = int(ncpu.stdout.strip()) if ncpu and ncpu.stdout.strip().isdigit() else 4
+    try:
+        l1 = float(la.stdout.strip())
+    except Exception:
+        l1 = 0.0
+    m["load_pct"] = round(l1 / cores * 100) if cores else 0
+    mem = run("free -m | awk '/Mem:/ {print $3, $2}'", timeout=5)
+    if mem and mem.stdout:
+        p = mem.stdout.split()
+        m["ram_used_mb"] = int(p[0]) if len(p) >= 1 and str(p[0]).isdigit() else 0
+        m["ram_total_mb"] = int(p[1]) if len(p) >= 2 and str(p[1]).isdigit() else 0
+    else:
+        m["ram_used_mb"] = m["ram_total_mb"] = 0
+    ls = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py health",
+             timeout=45, cwd="/root/LabDoctorM/projects/lab-memory")
+    vec = "?"
+    if ls and ls.stdout:
+        try:
+            vec = json.loads(ls.stdout).get("vectors", "?")
+        except Exception:
+            vec = "?"
+    try:
+        m["vectors"] = int(vec)
+    except Exception:
+        m["vectors"] = 0
+    dirty = 0
+    for p in ["lab-memory", "mcp-tools", "api-hub", "DoctorM_and_Ai"]:
+        d = os.path.join(PROJECTS, p)
+        if not os.path.isdir(d):
+            continue
+        g = run("git status --porcelain | wc -l", timeout=8, cwd=d)
+        n = int(g.stdout.strip()) if g and g.stdout.strip().isdigit() else 0
+        dirty += n
+    m["git_dirty"] = dirty
+    inc_total, inc_closed = 0, 0
+    cre = re.compile(r"status:\s*(resolved|closed|done)", re.IGNORECASE)
+    for root in [WORKSPACES, PROJECTS]:
+        if not os.path.isdir(root):
+            continue
+        for _ in os.listdir(root):
+            idir = os.path.join(root, _, "incidents")
+            if not os.path.isdir(idir):
+                continue
+            for f in os.listdir(idir):
+                if not f.endswith(".md"):
+                    continue
+                inc_total += 1
+                try:
+                    with open(os.path.join(idir, f), errors="ignore") as fh:
+                        if cre.search(fh.read(600)):
+                            inc_closed += 1
+                except Exception:
+                    pass
+    m["open_incidents"] = inc_total - inc_closed
+    m["ts"] = datetime.datetime.now(MSK).timestamp()
+    return m
+
+
+def load_metrics_history():
+    try:
+        with open(METRICS_HISTORY_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_metrics_history(hist):
+    try:
+        with open(METRICS_HISTORY_FILE, "w") as f:
+            json.dump(hist[-HISTORY_MAX:], f)
+    except Exception:
+        pass
+
+
+def _spark(values):
+    if not values:
+        return "—"
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        return SPARK_CHARS[-1] * len(values)
+    return "".join(SPARK_CHARS[min(len(SPARK_CHARS) - 1,
+                                   int((v - lo) / (hi - lo) * (len(SPARK_CHARS) - 1)))]
+                   for v in values)
+
+
+def compute_trend(history, current):
+    """delta = текущее минус предыдущий замер; spark = последние N значений."""
+    prev = history[-1] if history else None
+    keys = ["disk_pct", "load_pct", "ram_used_mb", "vectors", "git_dirty", "open_incidents"]
+
+    def band(key):
+        series = [h.get(key, 0) for h in history] + [current.get(key, 0)]
+        cur = current.get(key, 0)
+        delta = (cur - prev.get(key, 0)) if prev else 0
+        return {"cur": cur, "delta": delta, "spark": _spark(series[-12:])}
+    return {k: band(k) for k in keys}
+
+
 def build_report(full=False):
     results, fails = [], []
     for cid, name, fn in CATEGORIES:
         try:
-            ok, summary, details = fn()
+            status, summary, details = fn()
         except Exception as e:
-            ok, summary, details = False, f"ERROR: {e}", []
-        results.append((cid, name, ok, summary, details))
-        if not ok:
+            status, summary, details = False, f"ERROR: {e}", []
+        results.append((cid, name, status, summary, details))
+        if status is False:
             fails.append((cid, name, summary))
 
-    overall = "OK" if not fails else "ТРЕВОГА"
+    has_warn = any(st == "warn" for _, _, st, _, _ in results)
+    overall = "ТРЕВОГА" if fails else ("ВНИМАНИЕ" if has_warn else "OK")
     sf = self_factcheck(results)  # гард честности: монитор ловит сам себя
     stamp = NOW.strftime("%H:%M")
-    lines = [f"🦊 ЛабМонитор · {stamp} МСК · {overall}"]
+    score = sum(1 for _, _, st, _, _ in results if st is True)
+    total = len(results)
 
-    for cid, name, ok, summary, details in results:
-        lines.append(f"{'✅' if ok else '🔴'} {name}: {summary}")
+    # --- метрики + тренд (независимый замер, история для дельт/sparkline) ---
+    cur = collect_metrics()
+    cur["categories_ok"] = score
+    hist = load_metrics_history()
+    trend = compute_trend(hist, cur)
+    hist.append(cur)
+    save_metrics_history(hist)
+
+    emoji = OVERALL_EMOJI[overall]
+    header = f"🦊 ЛабМонитор · {stamp} МСК · {emoji} {overall} · {score}/{total}"
+
+    def _d(key):
+        d = trend[key]["delta"]
+        return f"{'+' if d > 0 else ''}{d}"
+    delta_bits = []
+    if trend["disk_pct"]["delta"]:
+        delta_bits.append(f"диск {_d('disk_pct')}%")
+    if trend["load_pct"]["delta"]:
+        delta_bits.append(f"load {_d('load_pct')}%")
+    if trend["vectors"]["delta"]:
+        delta_bits.append(f"vectors {_d('vectors')}")
+    if trend["open_incidents"]["delta"]:
+        delta_bits.append(f"инциденты {_d('open_incidents')}")
+    delta_str = (" · " + ", ".join(delta_bits)) if delta_bits else " · без изменений"
+    signals_line = f"💾{trend['disk_pct']['cur']}% 🧠{trend['vectors']['cur']} ⚡{trend['load_pct']['cur']}%{delta_str}"
+
+    def doctor_line():
+        dw = doctor_warnings()
+        if dw["new"]:
+            return f"🩺 openclaw doctor: {len(dw['new'])} НОВОЕ замечание — глянь"
+        if dw["count"]:
+            return f"🩺 openclaw doctor: {dw['count']} известное(ых), новых нет"
+        return None
+
+    def quote_block():
+        q = get_random_quote()
+        return ["", f"📜 Цитата часа: {q}"] if q else []
+
+    # --- COLLAPSE-TO-GREEN: когда всё OK — минимум строк (борьба с alert fatigue) ---
+    if overall == "OK" and not full and not sf:
+        cl = [header, signals_line]
+        dl_doc = doctor_line()
+        if dl_doc:
+            cl.append(dl_doc)
+        cl += quote_block()
+        cl.append("ℹ️ полный дамп — !подробно")
+        return "\n".join(cl)
+
+    # --- есть внимание/тревога ИЛИ full: показываем категории ---
+    lines = [header, signals_line]
+    for cid, name, status, summary, details in results:
+        lines.append(f"{ICON[status]} {name}: {summary}")
 
     if sf:
         lines.append("🔴 САМОПРОВЕРКА (монитор поймал сам себя):")
@@ -701,7 +916,7 @@ def build_report(full=False):
     # Гарды (DDP 2026-07-13): dedup по ключу инцидента + cooldown + circuit-breaker.
     if fails:
         lines.append("🔧 СОВЕТ (без «го» не спавню):")
-        details_by_cid = {cid: details for cid, name, ok, summary, details in results}
+        details_by_cid = {cid: details for cid, name, status, summary, details in results}
         advice_state = load_advice_state()
         now_ts = datetime.datetime.now(MSK).timestamp()
         changed = False
@@ -734,31 +949,25 @@ def build_report(full=False):
             save_advice_state(advice_state)
 
     if not full:
-        # док-проверка движка — один раз, без дублей (полный разбор — в секции 🩺 дампа)
-        dw = doctor_warnings()
-        if dw["new"]:
-            lines.append(f"🩺 openclaw doctor: {len(dw['new'])} НОВОЕ замечание — глянь")
-        elif dw["count"]:
-            lines.append(f"🩺 openclaw doctor: {dw['count']} известное(ых), новых нет")
-        q = get_random_quote()
-        if q:
-            lines.append("")
-            lines.append(f"📜 Цитата часа: {q}")
+        dl_doc = doctor_line()
+        if dl_doc:
+            lines.append(dl_doc)
+        lines += quote_block()
         lines.append("ℹ️ полный дамп — !подробно")
         return "\n".join(lines)
 
     # ---------- ПОЛНЫЙ ДАМП (full) — отдельный чистый формат, без дубля сводки ----------
-    icon = {True: "✅", False: "🔴"}
-    dl = [f"🦊 ЛабМонитор · полный дамп · {stamp} МСК · {overall}"]
+    icon = ICON
+    dl = [header, signals_line, ""]
 
-    for cid, name, ok, summary, details in results:
+    for cid, name, status, summary, details in results:
         dl.append("")
         # OK-категория: только статус+имя (числа в деталях ниже — без дубля summary);
         # упавшая: summary в заголовке (причина тревоги сразу видна).
-        if ok:
-            dl.append(f"{icon[ok]} {cid}. {name}")
+        if status is True:
+            dl.append(f"{icon[status]} {cid}. {name}")
         else:
-            dl.append(f"{icon[ok]} {cid}. {name} — {summary}")
+            dl.append(f"{icon[status]} {cid}. {name} — {summary}")
         if cid in CAT_HINT:
             dl.append(f"    💡 {CAT_HINT[cid]}")
         for d in details:
@@ -807,6 +1016,13 @@ def build_report(full=False):
     for w in dw["all"]:
         tag = "🔴 НОВОЕ" if w in dw["new"] else "старое"
         dl.append(f"    · [{tag}] {w[:110]}")
+
+    # тренд (sparkline) — текстовые блок-символы, Telegram-safe
+    dl.append("")
+    dl.append("📈 Тренд (последние прогоны):")
+    dl.append(f"    · 💾 диск   : {trend['disk_pct']['spark']}  ({trend['disk_pct']['cur']}%)")
+    dl.append(f"    · ⚡ load   : {trend['load_pct']['spark']}  ({trend['load_pct']['cur']}%)")
+    dl.append(f"    · 🧠 vectors: {trend['vectors']['spark']}  ({trend['vectors']['cur']})")
 
     q = get_random_quote()
     if q:

@@ -4,7 +4,11 @@
 """
 import importlib.util
 import os
+import sys
 import tempfile
+
+# путь к пакету lab_monitoring (src/) — чтобы импорт порогов в тестах работал
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 SPEC = importlib.util.spec_from_file_location(
     "lab_monitor",
@@ -185,7 +189,7 @@ def test_all_categories_mocked():
         short = M.build_report(full=False)
         assert "ЛабМонитор" in short
         full = M.build_report(full=True)
-        assert "полный дамп" in full
+        assert "📈 Тренд" in full
     finally:
         M.run = orig
 
@@ -335,7 +339,7 @@ def test_cat_mcp():
 
 
 def test_cat_data_disk():
-    for disk, ok_expected, hint in [("78%", True, "ок"), ("86%", False, "тревога"),
+    for disk, ok_expected, hint in [("78%", True, "ок"), ("86%", "warn", "близко к порогу"),
                                      ("96%", False, "КРИТ"), ("?", True, "ок")]:
         def _r(cmd, **k):
             if "docker ps" in cmd and "api-hub-db-1" in cmd:
@@ -509,6 +513,147 @@ def test_main_entrypoint():
     assert "ЛабМонитор" in out_buf.getvalue()
 
 
+def test_collect_metrics_basic(monkeypatch, tmp_path):
+    def _ok(cmd, **k):
+        if "is-active" in cmd:
+            return FakeRes("active")
+        if "docker ps" in cmd:
+            return FakeRes("Up 4 days")
+        if "df -h /" in cmd:
+            return FakeRes("50%")
+        if "free -m" in cmd:
+            return FakeRes("2000 7937")
+        if "loadavg" in cmd:
+            return FakeRes("0.50 0.40 0.30")
+        if "nproc" in cmd:
+            return FakeRes("4")
+        if "lab_search.py health" in cmd:
+            return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "openclaw doctor" in cmd:
+            return FakeRes("")
+        if "openssl" in cmd:
+            return FakeRes("notAfter=Sep 26 12:42:01 2026 GMT")
+        if "git status" in cmd:
+            return FakeRes("0")
+        if "systemctl show" in cmd and "NRestarts" in cmd:
+            return FakeRes("NRestarts=0")
+        if "journalctl" in cmd:
+            return FakeRes("")
+        return FakeRes("")
+    monkeypatch.setattr(M, "run", _ok)
+    monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
+    m = M.collect_metrics()
+    assert m["disk_pct"] == 50
+    assert m["vectors"] == 37596
+    assert "load_pct" in m and "ts" in m
+
+
+def test_spark_and_trend(monkeypatch, tmp_path):
+    monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
+    assert len(M._spark([1, 2, 3, 4])) == 4
+    assert set(M._spark([1, 2, 3, 4])).issubset(set(M.SPARK_CHARS))
+    assert M._spark([5, 5, 5]) == "█" * 3
+    hist = [{"disk_pct": 70, "load_pct": 30, "vectors": 37000, "ram_used_mb": 100, "git_dirty": 0, "open_incidents": 0},
+            {"disk_pct": 75, "load_pct": 35, "vectors": 37200, "ram_used_mb": 110, "git_dirty": 0, "open_incidents": 0}]
+    cur = {"disk_pct": 79, "load_pct": 40, "vectors": 37596, "ram_used_mb": 120, "git_dirty": 0, "open_incidents": 0}
+    tr = M.compute_trend(hist, cur)
+    assert tr["disk_pct"]["delta"] == 4    # 79 - 75 (prev)
+    assert tr["vectors"]["delta"] == 396
+    assert len(tr["disk_pct"]["spark"]) >= 1
+
+
+def test_collapse_to_green(monkeypatch, tmp_path):
+    def _ok(cmd, **k):
+        if "is-active" in cmd:
+            return FakeRes("active")
+        if "docker ps" in cmd:
+            return FakeRes("Up 4 days")
+        if "df -h /" in cmd:
+            return FakeRes("50%")
+        if "free -m" in cmd:
+            return FakeRes("2000 7937")
+        if "loadavg" in cmd:
+            return FakeRes("0.50 0.40 0.30")
+        if "nproc" in cmd:
+            return FakeRes("4")
+        if "lab_search.py health" in cmd:
+            return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "openclaw doctor" in cmd:
+            return FakeRes("")
+        if "openssl" in cmd:
+            return FakeRes("notAfter=Sep 26 12:42:01 2026 GMT")
+        if "git status" in cmd:
+            return FakeRes("0")
+        if "systemctl show" in cmd and "NRestarts" in cmd:
+            return FakeRes("NRestarts=0")
+        if "journalctl" in cmd:
+            return FakeRes("")
+        return FakeRes("")
+    orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
+    orig_categories = M.CATEGORIES
+    M.run = _ok
+    M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
+    M.get_random_quote = lambda: "цитата"
+    M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+    M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
+    monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
+    try:
+        short = M.build_report(full=False)
+        # коллапс: категории НЕ перечисляются при OK
+        assert "✅ Агенты" not in short
+        assert "8/8" in short
+        assert "💾" in short and "🧠" in short and "⚡" in short
+        assert "ℹ️ полный дамп — !подробно" in short
+    finally:
+        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
+        M.CATEGORIES = orig_categories
+
+
+def test_severity_warn_shows(monkeypatch, tmp_path):
+    def _warn_disk(cmd, **k):
+        if "is-active" in cmd:
+            return FakeRes("active")
+        if "docker ps" in cmd:
+            return FakeRes("Up 4 days")
+        if "df -h /" in cmd:
+            return FakeRes("86%")  # warn-полоса
+        if "free -m" in cmd:
+            return FakeRes("2000 7937")
+        if "loadavg" in cmd:
+            return FakeRes("0.50 0.40 0.30")
+        if "nproc" in cmd:
+            return FakeRes("4")
+        if "lab_search.py health" in cmd:
+            return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "openclaw doctor" in cmd:
+            return FakeRes("")
+        if "openssl" in cmd:
+            return FakeRes("notAfter=Sep 26 12:42:01 2026 GMT")
+        if "git status" in cmd:
+            return FakeRes("0")
+        if "systemctl show" in cmd and "NRestarts" in cmd:
+            return FakeRes("NRestarts=0")
+        if "journalctl" in cmd:
+            return FakeRes("")
+        return FakeRes("")
+    orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
+    orig_categories = M.CATEGORIES
+    M.run = _warn_disk
+    M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
+    M.get_random_quote = lambda: "цитата"
+    M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+    M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
+    monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
+    try:
+        short = M.build_report(full=False)
+        assert "ВНИМАНИЕ" in short            # overall-уровень
+        assert "⚠️ Данные" in short           # warn-категория видна
+        assert "✅ Агенты" in short           # остальные OK видны (не коллапс)
+    finally:
+        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
+        M.CATEGORIES = orig_categories
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
     test_all_categories_mocked()
@@ -538,4 +683,8 @@ if __name__ == "__main__":
     test_build_report_with_fail()
     test_build_report_advice_gateway_down()
     test_main_entrypoint()
+    test_collect_metrics_basic()
+    test_spark_and_trend()
+    test_collapse_to_green()
+    test_severity_warn_shows()
     print("ALL TESTS PASSED")
