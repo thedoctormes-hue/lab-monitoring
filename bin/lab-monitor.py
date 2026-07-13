@@ -202,7 +202,11 @@ ROUTE_SKILLS = "research + labsearch + Археолог корней"
 # «Что это» простым языком — контекстная подсказка для каждой категории (для --full)
 CAT_HINT = {
     1: "САМ ФАКТ, что этот отчёт ДОШЁЛ = OpenClaw и агент-отправитель живы на 100% (не дошёл бы иначе). Правило ЗавЛаба: пришёл отчёт → живы; не пришёл → мертвы. Строка ниже лишь проверяет целостность файлов-памяти агентов на диске (НЕ живость).",
-    2: "Сам движок OpenClaw (гейтвей). Живость доказана самим фактом доставки отчёта. Перезапуски теперь считаются ЗА ОКНО ОТЧЁТА (1ч), а не за всю жизнь юнита: ручные рестарты (ты сам делал) — 💡 сверься с памятью; авто-перезапуски (systemd сам поднял после падения, маркер 'Scheduled restart') — 🔴 подозрительно, нужен root-cause. Исторический lifetime-счётчик (NRestarts) показан для справки, но тревогу НЕ управляет (горел бы вечно).",
+    2: "OpenClaw (гейтвей). Живость доказана доставкой этого отчёта.\n"
+       "Перезапуски меряем за окно отчёта (1ч), а не за всю жизнь юнита:\n"
+       "· ручные рестарты — ты сам их делал, это ок (сверься с памятью)\n"
+       "· авто-перезапуски (systemd сам поднял после падения) — 🔴 подозрительно, ищи root-cause\n"
+       "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
     4: "Семантический поиск лабы (ONNX + FAISS). vectors — сколько записей в индексе. reindex = авто-обновление.",
     5: "Базы и диск. disk — заполненность; норма <85%, тревога с 85%, крит 95%.",
@@ -336,22 +340,16 @@ def cat_openclaw():
     if not active:
         detail = f"gateway DOWN (история lifetime: {nrest})"
     elif cls["classification"] == "auto":
-        detail = (f"gateway работает, АВТО-перезапусков за {win}: {cls['auto']} "
-                  f"(systemd сам поднимал после падения — подозрительно, нужен root-cause)")
+        detail = (f"gateway работает · АВТО-перезапуск за {win}: {cls['auto']} "
+                  f"(systemd сам поднял после падения — 🔴 подозрительно, нужен root-cause)")
     elif cls["classification"] == "manual":
-        detail = (f"gateway работает, ручных рестартов за {win}: {cls['manual']} "
-                  f"(сверься с памятью: ты сам рестартил в этом часу?)")
+        detail = (f"gateway работает · ручных рестартов за {win}: {cls['manual']} "
+                  f"(ты сам делал — ок, сверься с памятью)")
     else:
-        detail = f"gateway работает, перезапусков за {win}: 0"
-    if dw["new"]:
-        detail += f"\n⚠️ самопроверка: {len(dw['new'])} НОВЫХ замечаний: {', '.join(w[:50] for w in dw['new'][:2])}"
-    else:
-        detail += f"\n⚠️ самопроверка: {dw['count']} старое безопасное замечание, новых нет"
+        detail = f"gateway работает · перезапусков за {win}: 0"
     ok = active and cls["classification"] != "auto" and not dw["new"]
-    out = [f"перезапуски за {win}: total={cls['total']} (ручные ~{cls['manual']}, авто {cls['auto']}); "
-           f"история lifetime: {nrest}"]
-    # Предупреждения доктора выводятся целиком в выделенной секции 🩺 внизу полного дампа
-    # (и в коротком отчёте — через summary-строку ⚠️ самопроверка), чтобы не дублировать данные.
+    # Детали перезапусков — одной строкой (философия/реакция — в CAT_HINT[2]); без дублей.
+    out = [f"🔄 перезапуски за {win}: всего {cls['total']} · ручные ~{cls['manual']} · авто {cls['auto']} · lifetime {nrest}"]
     return ok, detail, out
 
 
@@ -691,11 +689,6 @@ def build_report(full=False):
     stamp = NOW.strftime("%H:%M")
     lines = [f"🦊 ЛабМонитор · {stamp} МСК · {overall}"]
 
-    if fails:
-        lines.append("🔴 провалы:")
-        for cid, name, summary in fails:
-            lines.append(f"  • [{cid}] {name}: {summary}")
-
     for cid, name, ok, summary, details in results:
         lines.append(f"{'✅' if ok else '🔴'} {name}: {summary}")
 
@@ -741,6 +734,12 @@ def build_report(full=False):
             save_advice_state(advice_state)
 
     if not full:
+        # док-проверка движка — один раз, без дублей (полный разбор — в секции 🩺 дампа)
+        dw = doctor_warnings()
+        if dw["new"]:
+            lines.append(f"🩺 openclaw doctor: {len(dw['new'])} НОВОЕ замечание — глянь")
+        elif dw["count"]:
+            lines.append(f"🩺 openclaw doctor: {dw['count']} известное(ых), новых нет")
         q = get_random_quote()
         if q:
             lines.append("")
@@ -751,11 +750,6 @@ def build_report(full=False):
     # ---------- ПОЛНЫЙ ДАМП (full) — отдельный чистый формат, без дубля сводки ----------
     icon = {True: "✅", False: "🔴"}
     dl = [f"🦊 ЛабМонитор · полный дамп · {stamp} МСК · {overall}"]
-    if fails:
-        dl.append("")
-        dl.append("🔴 ТРЕВОГИ:")
-        for cid, name, summary in fails:
-            dl.append(f"  • {name}: {summary}")
 
     for cid, name, ok, summary, details in results:
         dl.append("")

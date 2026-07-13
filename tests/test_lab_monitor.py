@@ -17,7 +17,7 @@ SPEC.loader.exec_module(M)
 def test_self_factcheck_catches_lies():
     fake = [
         (1, "Агенты", True, "живы (отчёт дошёл)", []),
-        (2, "OpenClaw", True, "gateway работает, АВТО-перезапусков за 1h: 9 (systemd сам поднимал)\n⚠️ самопроверка: 1 старое безопасное замечание, новых нет", []),
+        (2, "OpenClaw", True, "gateway работает, АВТО-перезапусков за 1h: 9 (systemd сам поднимал)", []),
         (3, "MCP", True, "2/3 работают", ["mcp-memory (порт 8087): DOWN"]),
         (5, "Данные", True, "PostgreSQL up; disk 96% (норма <85% — КРИТ)", []),
         (8, "Сервер", True, "load 0.93 (1мин 9.50 — ВЫСОКАЯ, норма <4)", []),
@@ -29,7 +29,7 @@ def test_self_factcheck_catches_lies():
 def test_self_factcheck_clean():
     honest = [
         (1, "Агенты", True, "живы (отчёт дошёл)", ["x: на месте"]),
-        (2, "OpenClaw", True, "gateway работает, перезапусков за 1h: 0\n⚠️ самопроверка: 1 старое безопасное замечание, новых нет", []),
+        (2, "OpenClaw", True, "gateway работает, перезапусков за 1h: 0", []),
         (3, "MCP", True, "3/3 работают", ["mcp-memory (порт 8087): работает"]),
         (5, "Данные", True, "PostgreSQL up; disk 79% (норма <80% — ок)", []),
         (8, "Сервер", True, "load 1.0 (1мин 1.0 — ок, норма <4)", []),
@@ -299,7 +299,9 @@ def test_cat_openclaw_branches():
         M.doctor_warnings = lambda: {"count": 1, "new": ["NEW DOC WARN"], "all": ["NEW DOC WARN"]}
         M.run = make("active", "", "6")
         ok, s, o = M.cat_openclaw()
-        assert ok is False and "НОВЫХ замечаний" in s
+        # новые замечания доктора больше НЕ дублируются в detail категории —
+        # они поднимают ok=False и показываются в строке 🩺 / секции дампа.
+        assert ok is False
     finally:
         M.run, M.doctor_warnings = orig_run, orig_dw
 
@@ -461,10 +463,12 @@ def test_build_report_with_fail(tmp_path, monkeypatch):
     M.CATEGORIES = [failing if c[0] == 1 else c for c in orig_cats]
     try:
         short = M.build_report(full=False)
-        assert "🔴 провалы:" in short
+        # провал виден по категории (топ-сводка «🔴 провалы:» удалена — не дублируем данные)
+        assert "🔴 Агенты" in short
         assert "🔧 СОВЕТ" in short
         full = M.build_report(full=True)
-        assert "🔴 ТРЕВОГИ:" in full
+        # в full провал тоже только по категории (блок «🔴 ТРЕВОГИ:» удалён); формат «🔴 1. Агенты»
+        assert "🔴 1. Агенты" in full
     finally:
         M.CATEGORIES = orig_cats
 
