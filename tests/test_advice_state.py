@@ -1,8 +1,8 @@
 """Тесты синергии порогов и гардов слоя реагирования (Фаза 2, DDP 2026-07-13)."""
 import importlib.util
 import os
+from unittest.mock import patch
 
-import pytest
 
 _MONITOR_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -26,3 +26,31 @@ def test_advice_state_roundtrip(tmp_path, monkeypatch):
     payload = {"7": {"last_ts": 1.0, "count": 2, "cooldown_until": 999.0}}
     M.save_advice_state(payload)
     assert M.load_advice_state() == payload
+
+
+def test_ping_healthchecks_called_when_env_set(monkeypatch):
+    monkeypatch.setenv("HEALTHCHECKS_URL", "https://hc.example/ping")
+    with patch("urllib.request.urlopen") as mock:
+        M.ping_healthchecks()
+        mock.assert_called_once()
+
+
+def test_ping_healthchecks_skipped_when_no_env(monkeypatch):
+    monkeypatch.delenv("HEALTHCHECKS_URL", raising=False)
+    with patch("urllib.request.urlopen") as mock:
+        M.ping_healthchecks()
+        mock.assert_not_called()
+
+
+def test_notify_fallback_called_when_env_set(monkeypatch):
+    monkeypatch.setenv("NOTIFY_WEBHOOK_URL", "https://hook.example/x")
+    with patch("urllib.request.urlopen") as mock:
+        M.notify_fallback("привет")
+        mock.assert_called_once()
+
+
+def test_notify_fallback_skipped_when_no_env(monkeypatch):
+    monkeypatch.delenv("NOTIFY_WEBHOOK_URL", raising=False)
+    with patch("urllib.request.urlopen") as mock:
+        M.notify_fallback("привет")
+        mock.assert_not_called()

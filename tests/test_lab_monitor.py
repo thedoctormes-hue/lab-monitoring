@@ -454,8 +454,9 @@ def test_build_report_full_bottom_sections():
         M.run, M.get_random_quote, M.doctor_warnings = orig_run, orig_q, orig_dw
 
 
-def test_build_report_with_fail():
+def test_build_report_with_fail(tmp_path, monkeypatch):
     orig_cats = M.CATEGORIES
+    monkeypatch.setattr(M, "ADVICE_STATE_FILE", str(tmp_path / "advice_state.json"))
     failing = (1, "Агенты", lambda: (False, "agents DOWN — провал", ["detail line"]))
     M.CATEGORIES = [failing if c[0] == 1 else c for c in orig_cats]
     try:
@@ -468,8 +469,9 @@ def test_build_report_with_fail():
         M.CATEGORIES = orig_cats
 
 
-def test_build_report_advice_gateway_down():
+def test_build_report_advice_gateway_down(tmp_path, monkeypatch):
     orig_cats = M.CATEGORIES
+    monkeypatch.setattr(M, "ADVICE_STATE_FILE", str(tmp_path / "advice_state.json"))
     failing = (2, "OpenClaw", lambda: (False, "gateway DOWN — упал", ["detail"]))
     M.CATEGORIES = [failing if c[0] == 2 else c for c in orig_cats]
     try:

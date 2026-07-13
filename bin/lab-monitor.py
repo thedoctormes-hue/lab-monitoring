@@ -87,6 +87,41 @@ def fmt_ts(ts):
         return str(ts)
 
 
+# --- Dead-man's-switch (world-class pattern, DDP 2026-07-13) ---
+# Опционально: если задан HEALTHCHECKS_URL (healthchecks.io или self-hosted),
+# монитор шлёт ping об успешном прогоне. Если прогон не дошёл (упал/не
+# запустился) — ping не придёт, и внешний сторож поднимет тревогу.
+# ВЫКЛЮЧЕНО по умолчанию (уважает §11: авто-watchdog не обязателен; это его
+# опциональный апгрейд — «телефон ЗавЛаба», но автоматизированный).
+def ping_healthchecks():
+    url = os.environ.get("HEALTHCHECKS_URL")
+    if not url:
+        return
+    try:
+        import urllib.request
+        urllib.request.urlopen(url, timeout=10)
+    except Exception:
+        pass
+
+
+# --- Второй канал доставки (fallback) ---
+# Опционально: если задан NOTIFY_WEBHOOK_URL, продублировать отчёт туда
+# (HTTP POST, поле 'text'). Запасной канал, если основной (крон -> Telegram)
+# не дойдёт. ВЫКЛЮЧЕНО по умолчанию.
+def notify_fallback(text):
+    url = os.environ.get("NOTIFY_WEBHOOK_URL")
+    if not url:
+        return
+    try:
+        import urllib.parse
+        import urllib.request
+        data = urllib.parse.urlencode({"text": text[:4000]}).encode()
+        req = urllib.request.Request(url, data=data, method="POST")
+        urllib.request.urlopen(req, timeout=15)
+    except Exception:
+        pass
+
+
 # варнинги доктора, которые считаем "базовым шумом" (известны, приняты) -> в allowlist
 DOCTOR_ALLOWLIST = [
     "message tool unavailable", "config-health.json", "legacy state migration",
@@ -790,6 +825,10 @@ def build_report(full=False):
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         print(selftest_report())
+        ping_healthchecks()
     else:
         full = "--full" in sys.argv
-        print(build_report(full=full))
+        report = build_report(full=full)
+        print(report)
+        notify_fallback(report)
+        ping_healthchecks()
