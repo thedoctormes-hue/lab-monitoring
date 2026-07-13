@@ -47,6 +47,46 @@ THRESHOLDS = {
     "load_high_x": 2.0,     # load1 < 2×ядер          = повышенная (не сбой); >=2×ядер = тревога
 }
 
+# --- Синхронизация с единым источником порогов (src/lab_monitoring/thresholds.py) ---
+# Чтобы два монитора (src и этот) не расходились по числам (DDP 2026-07-13).
+# Если пакет недоступен — остаёмся на локальных порогах (fallback).
+try:
+    from lab_monitoring.thresholds import AlertConfig as _AlertConfig
+    _cfg = _AlertConfig()
+    THRESHOLDS["disk_warn_pct"] = int(_cfg.disk_warn_pct)
+    THRESHOLDS["disk_crit_pct"] = int(_cfg.disk_critical_pct)
+except Exception:
+    pass
+
+# --- Гарды слоя реагирования (DDP 2026-07-13): dedup + cooldown + circuit-breaker ---
+ADVISE_COOLDOWN_S = 6 * 3600   # повторный совет по тому же ключу не раньше чем через 6ч
+ADVISE_CIRCUIT_K  = 3          # после 3-х советов подряд — circuit-breaker (стоп)
+ADVICE_STATE_FILE = os.path.join(STATE_DIR, "advice_state.json")
+
+
+def load_advice_state():
+    try:
+        with open(ADVICE_STATE_FILE, "r", encoding="utf-8") as _f:
+            return json.load(_f)
+    except Exception:
+        return {}
+
+
+def save_advice_state(state):
+    try:
+        with open(ADVICE_STATE_FILE, "w", encoding="utf-8") as _f:
+            json.dump(state, _f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def fmt_ts(ts):
+    try:
+        return datetime.datetime.fromtimestamp(ts, MSK).strftime("%H:%M %d.%m")
+    except Exception:
+        return str(ts)
+
+
 # варнинги доктора, которые считаем "базовым шумом" (известны, приняты) -> в allowlist
 DOCTOR_ALLOWLIST = [
     "message tool unavailable", "config-health.json", "legacy state migration",
@@ -629,11 +669,20 @@ def build_report(full=False):
         for p in sf:
             lines.append(f"  • {p}")
 
-    # слой реагирования (advise) — умный совет по провалу, иначе fallback на маршрут
+    # слой реагирования (advise) — умный совет по провалу, иначе fallback на маршрут.
+    # Гарды (DDP 2026-07-13): dedup по ключу инцидента + cooldown + circuit-breaker.
     if fails:
         lines.append("🔧 СОВЕТ (без «го» не спавню):")
         details_by_cid = {cid: details for cid, name, ok, summary, details in results}
+        advice_state = load_advice_state()
+        now_ts = datetime.datetime.now(MSK).timestamp()
+        changed = False
+        fail_cids = {str(c[0]) for c in fails}
         for cid, name, summary in fails:
+            st = advice_state.get(str(cid), {"last_ts": 0.0, "count": 0, "cooldown_until": 0.0})
+            if now_ts < st.get("cooldown_until", 0.0):
+                lines.append(f"  → [{cid}] {name}: ↺ повтор (совет дан ранее; cooldown до {fmt_ts(st['cooldown_until'])})")
+                continue
             fn = ADVICE.get(cid)
             if fn:
                 ctx = summary + "\n" + "\n".join(details_by_cid.get(cid, []))
@@ -641,6 +690,20 @@ def build_report(full=False):
                 lines.append(f"  → [{cid}] {name}: {advice}")
             else:
                 lines.append(f"  → [{cid}] {name}: спавнить {ROUTE.get(cid,'?')} с набором [{ROUTE_SKILLS}]")
+            st["last_ts"] = now_ts
+            st["count"] = st.get("count", 0) + 1
+            st["cooldown_until"] = now_ts + ADVISE_COOLDOWN_S
+            if st["count"] >= ADVISE_CIRCUIT_K:
+                lines.append(f"  ⛔ circuit-breaker: [{cid}] — советы остановлены после {st['count']} попыток (нужен «го»/ручное расследование)")
+            advice_state[str(cid)] = st
+            changed = True
+        # сброс состояния для решённых инцидентов
+        for _cid in list(advice_state.keys()):
+            if _cid not in fail_cids:
+                del advice_state[_cid]
+                changed = True
+        if changed:
+            save_advice_state(advice_state)
 
     if not full:
         q = get_random_quote()

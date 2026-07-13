@@ -31,7 +31,7 @@ def test_self_factcheck_clean():
         (1, "Агенты", True, "живы (отчёт дошёл)", ["x: на месте"]),
         (2, "OpenClaw", True, "gateway работает, перезапусков за 1h: 0\n⚠️ самопроверка: 1 старое безопасное замечание, новых нет", []),
         (3, "MCP", True, "3/3 работают", ["mcp-memory (порт 8087): работает"]),
-        (5, "Данные", True, "PostgreSQL up; disk 81% (норма <85% — ок)", []),
+        (5, "Данные", True, "PostgreSQL up; disk 79% (норма <80% — ок)", []),
         (8, "Сервер", True, "load 1.0 (1мин 1.0 — ок, норма <4)", []),
     ]
     assert M.self_factcheck(honest) == []
@@ -39,8 +39,11 @@ def test_self_factcheck_clean():
 
 def test_thresholds():
     t = M.THRESHOLDS
-    assert t["disk_warn_pct"] == 85
-    assert t["disk_crit_pct"] == 95
+    # disk-пороги синхронизированы с единым источником (src/lab_monitoring/thresholds.py)
+    from lab_monitoring.thresholds import AlertConfig
+    cfg = AlertConfig()
+    assert t["disk_warn_pct"] == int(cfg.disk_warn_pct)
+    assert t["disk_crit_pct"] == int(cfg.disk_critical_pct)
     assert t["nrestarts_ok"] == 5
     assert t["load_warn_x"] == 1.0
     assert t["load_high_x"] == 2.0
