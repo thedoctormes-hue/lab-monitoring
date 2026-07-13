@@ -2,6 +2,7 @@
 Покрывают чистые функции: self_factcheck (гард честности), THRESHOLDS, clean_line.
 Запуск: python3 tests/test_lab_monitor.py
 """
+import datetime
 import importlib.util
 import os
 import sys
@@ -654,6 +655,109 @@ def test_severity_warn_shows(monkeypatch, tmp_path):
         M.CATEGORIES = orig_categories
 
 
+def test_quiet_hours_active():
+    tz = datetime.timezone(datetime.timedelta(hours=3))
+    assert M.quiet_hours_active(now=datetime.datetime(2026, 7, 13, 3, 0, tzinfo=tz)) is True
+    assert M.quiet_hours_active(now=datetime.datetime(2026, 7, 13, 12, 0, tzinfo=tz)) is False
+    assert M.quiet_hours_active(now=datetime.datetime(2026, 7, 13, 8, 0, tzinfo=tz)) is False  # 8 не включая
+
+
+def test_symptom_frame():
+    s = M.symptom_frame(5, False, "PostgreSQL DOWN")
+    assert "последствие" in s and "api-hub" in s
+    assert M.symptom_frame(5, True, "ок") == "ок"
+
+
+def test_gateway_latency_in_output():
+    orig_run, orig_port = M.run, M.port_ok
+    M.run = _mock_run
+    M.port_ok = lambda *a, **k: True
+    try:
+        st, summ, out = M.cat_openclaw()
+        assert any("gateway latency" in o for o in out)
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+
+
+def test_quiet_suppresses_when_ok(tmp_path):
+    orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
+    orig_categories = M.CATEGORIES
+    orig_now = M.NOW
+    orig_hist = M.METRICS_HISTORY_FILE
+    M.run = _mock_run
+    M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
+    M.get_random_quote = lambda: "цитата"
+    M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+    M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
+    tz = datetime.timezone(datetime.timedelta(hours=3))
+    M.NOW = datetime.datetime(2026, 7, 13, 3, 0, tzinfo=tz)  # тихий час
+    M.METRICS_HISTORY_FILE = str(tmp_path / "m.json")
+    try:
+        report = M.build_report(full=False)
+        assert report == ""  # тихие часы + OK -> подавлено
+    finally:
+        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
+        M.CATEGORIES = orig_categories
+        M.NOW = orig_now
+        M.METRICS_HISTORY_FILE = orig_hist
+
+
+def test_ack_skips_advice(tmp_path):
+    import json as _json
+    ack = tmp_path / "ack.json"
+    ack.write_text(_json.dumps({"5": 9999999999.0}))  # далеко в будущем
+    orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
+    orig_categories = M.CATEGORIES
+    orig_ack = M.ACK_FILE
+    orig_hist = M.METRICS_HISTORY_FILE
+    M.run = _mock_run
+    M.doctor_warnings = lambda: {"count": 0, "new": [], "all": ["x"]}
+    M.get_random_quote = lambda: "цитата"
+    M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+    def fake_data():
+        return (False, "PostgreSQL DOWN; disk 79% (норма <80% — ок)", ["PostgreSQL(api-hub-db-1): DOWN/off"])
+    M.CATEGORIES = [(5, "Данные", fake_data) if c[0] == 5 else c for c in orig_categories]
+    M.ACK_FILE = str(ack)
+    M.METRICS_HISTORY_FILE = str(tmp_path / "m.json")
+    try:
+        report = M.build_report(full=False)
+        assert "🔕 заглушено" in report
+        assert "Данные" in report
+    finally:
+        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
+        M.CATEGORIES = orig_categories
+        M.ACK_FILE = orig_ack
+        M.METRICS_HISTORY_FILE = orig_hist
+
+
+def test_daily_digest(tmp_path):
+    import json as _json
+    tz = datetime.timezone(datetime.timedelta(hours=3))
+    now = datetime.datetime.now(tz).timestamp()
+    hist = [
+        {"ts": now - 3600, "disk_pct": 79, "load_pct": 50, "ram_used_mb": 4000, "vectors": 37000, "open_incidents": 7, "git_dirty": 8},
+        {"ts": now - 60, "disk_pct": 80, "load_pct": 60, "ram_used_mb": 4200, "vectors": 37596, "open_incidents": 7, "git_dirty": 8},
+    ]
+    hf = tmp_path / "hist.json"
+    hf.write_text(_json.dumps(hist))
+    orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
+    orig_categories = M.CATEGORIES
+    orig_hist = M.METRICS_HISTORY_FILE
+    M.run = _mock_run
+    M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
+    M.get_random_quote = lambda: "цитата"
+    M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+    M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
+    M.METRICS_HISTORY_FILE = str(hf)
+    try:
+        report = M.build_report(full=True, daily=True)
+        assert "📊 Дайджест за 24ч" in report
+    finally:
+        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
+        M.CATEGORIES = orig_categories
+        M.METRICS_HISTORY_FILE = orig_hist
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
     test_all_categories_mocked()
@@ -687,4 +791,7 @@ if __name__ == "__main__":
     test_spark_and_trend()
     test_collapse_to_green()
     test_severity_warn_shows()
+    test_quiet_hours_active()
+    test_symptom_frame()
+    test_gateway_latency_in_output()
     print("ALL TESTS PASSED")

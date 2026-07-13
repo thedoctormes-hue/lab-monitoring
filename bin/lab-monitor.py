@@ -80,6 +80,28 @@ METRICS_HISTORY_FILE = os.path.join(STATE_DIR, "lab-monitor-metrics.json")
 HISTORY_MAX = 48  # ~2 суток при часовом кроне
 SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
+# === Тир 3 (DDP 2026-07-13): тихие часы + ack/silence + дневной дайджест ===
+# В тихие часы (по умолчанию 00:00–08:00 МСК) отправляем ТОЛЬКО 🔴 (ТРЕВОГА),
+# чтобы не будить ЗавЛаба по ночам ради «всё ок». Окно переопределяется env.
+QUIET_HOURS_START = int(os.environ.get("QUIET_HOURS_START", "0"))  # МСК час начала тишины
+QUIET_HOURS_END   = int(os.environ.get("QUIET_HOURS_END", "8"))    # МСК час окончания (не включая)
+# Ручное заглушение конкретного совета/алерта: {"5": <unix_ts до которого silent>}
+ACK_FILE = os.path.join(STATE_DIR, "ack.json")
+
+# === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
+# Вместо сухого «X DOWN» — показываем последствие (что сломается у ЗавЛаба).
+SYMPTOM = {
+    1: "колония не получит отчёт/команду",
+    2: "доставка сообщений ЗавЛабу остановлена",
+    3: "внутренние инструменты (память/ключи/порты) недоступны агентам",
+    4: "семантический поиск лабы не работает — агенты слепы к памяти",
+    5: "приложения не смогут писать/читать БД (api-hub ляжет)",
+    6: "внешний доступ / метапоиск / SSL нарушены",
+    8: "хост перегружен — сервисы могут деградировать",
+}
+GATEWAY_PORT = 18789
+GATEWAY_LATENCY_WARN_MS = 1000
+
 
 def worst(*states):
     """Худший из статусов: False < 'warn' < True."""
@@ -111,6 +133,46 @@ def fmt_ts(ts):
         return datetime.datetime.fromtimestamp(ts, MSK).strftime("%H:%M %d.%m")
     except Exception:
         return str(ts)
+
+
+# --- Тир 3: тихие часы + ack/silence ---
+def quiet_hours_active(now=None):
+    """True, если сейчас в окне тишины (МСК). Поддерживает пересечение полуночи."""
+    now = now or NOW
+    h = now.hour
+    if QUIET_HOURS_START <= QUIET_HOURS_END:
+        return QUIET_HOURS_START <= h < QUIET_HOURS_END
+    return h >= QUIET_HOURS_START or h < QUIET_HOURS_END
+
+
+def load_ack():
+    try:
+        with open(ACK_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def is_acked(cid, now_ts, ack_state=None):
+    ack = ack_state if ack_state is not None else load_ack()
+    until = ack.get(str(cid))
+    if until is None:
+        return False
+    try:
+        return now_ts < float(until)
+    except Exception:
+        return False
+
+
+def symptom_frame(cid, status, summary):
+    """Тир4: при провале дописываем последствие (симптом), чтобы ЗавЛаб видел
+    не просто 'DOWN', а что именно сломается в его руках."""
+    if status is True:
+        return summary
+    sym = SYMPTOM.get(cid)
+    if not sym:
+        return summary
+    return f"{summary} → последствие: {sym}"
 
 
 # --- Dead-man's-switch (world-class pattern, DDP 2026-07-13) ---
@@ -373,9 +435,16 @@ def cat_openclaw():
                   f"(ты сам делал — ок, сверься с памятью)")
     else:
         detail = f"gateway работает · перезапусков за {win}: 0"
+    import time as _time
+    _t0 = _time.monotonic()
+    gw_ok = port_ok(GATEWAY_PORT)
+    gw_lat = int((_time.monotonic() - _t0) * 1000)
+    gw_lat_s = f"gateway latency: {gw_lat}ms ({'ok' if gw_ok else 'no response'})"
+    if gw_ok and gw_lat >= GATEWAY_LATENCY_WARN_MS:
+        gw_lat_s += " · ⚠️ медленный отклик"
     ok = active and cls["classification"] != "auto" and not dw["new"]
     # Детали перезапусков — одной строкой (философия/реакция — в CAT_HINT[2]); без дублей.
-    out = [f"🔄 перезапуски за {win}: всего {cls['total']} · ручные ~{cls['manual']} · авто {cls['auto']} · lifetime {nrest}"]
+    out = [gw_lat_s, f"🔄 перезапуски за {win}: всего {cls['total']} · ручные ~{cls['manual']} · авто {cls['auto']} · lifetime {nrest}"]
     return ok, detail, out
 
 
@@ -836,7 +905,24 @@ def compute_trend(history, current):
     return {k: band(k) for k in keys}
 
 
-def build_report(full=False):
+def daily_summary(hist):
+    """Тир3: сводка за 24ч (min/avg/max) по ключевым метрикам из истории."""
+    cutoff = datetime.datetime.now(MSK).timestamp() - 86400
+    day = [h for h in hist if h.get("ts", 0) >= cutoff]
+    if len(day) < 2:
+        return ["📊 Дайджест за 24ч: недостаточно данных (нужно ≥2 прогона)"]
+    keys = ["disk_pct", "load_pct", "ram_used_mb", "vectors", "open_incidents", "git_dirty"]
+    lines = [f"📊 Дайджест за 24ч (n={len(day)}):"]
+    for k in keys:
+        vals = [h.get(k, 0) for h in day if isinstance(h.get(k), (int, float))]
+        if not vals:
+            continue
+        lo, hi, avg = min(vals), max(vals), round(sum(vals) / len(vals), 1)
+        lines.append(f"    · {k}: min {lo} / avg {avg} / max {hi}")
+    return lines
+
+
+def build_report(full=False, daily=False):
     results, fails = [], []
     for cid, name, fn in CATEGORIES:
         try:
@@ -861,6 +947,10 @@ def build_report(full=False):
     trend = compute_trend(hist, cur)
     hist.append(cur)
     save_metrics_history(hist)
+
+    # --- Тир3: тихие часы — не беспокоим ЗавЛаба без 🔴 ---
+    if quiet_hours_active() and overall != "ТРЕВОГА":
+        return ""
 
     emoji = OVERALL_EMOJI[overall]
     header = f"🦊 ЛабМонитор · {stamp} МСК · {emoji} {overall} · {score}/{total}"
@@ -905,7 +995,7 @@ def build_report(full=False):
     # --- есть внимание/тревога ИЛИ full: показываем категории ---
     lines = [header, signals_line]
     for cid, name, status, summary, details in results:
-        lines.append(f"{ICON[status]} {name}: {summary}")
+        lines.append(f"{ICON[status]} {name}: {symptom_frame(cid, status, summary)}")
 
     if sf:
         lines.append("🔴 САМОПРОВЕРКА (монитор поймал сам себя):")
@@ -918,10 +1008,14 @@ def build_report(full=False):
         lines.append("🔧 СОВЕТ (без «го» не спавню):")
         details_by_cid = {cid: details for cid, name, status, summary, details in results}
         advice_state = load_advice_state()
+        ack_state = load_ack()
         now_ts = datetime.datetime.now(MSK).timestamp()
         changed = False
         fail_cids = {str(c[0]) for c in fails}
         for cid, name, summary in fails:
+            if is_acked(cid, now_ts, ack_state):
+                lines.append(f"  → [{cid}] {name}: 🔕 заглушено (ack до {fmt_ts(ack_state.get(str(cid), now_ts))})")
+                continue
             st = advice_state.get(str(cid), {"last_ts": 0.0, "count": 0, "cooldown_until": 0.0})
             if now_ts < st.get("cooldown_until", 0.0):
                 lines.append(f"  → [{cid}] {name}: ↺ повтор (совет дан ранее; cooldown до {fmt_ts(st['cooldown_until'])})")
@@ -964,10 +1058,11 @@ def build_report(full=False):
         dl.append("")
         # OK-категория: только статус+имя (числа в деталях ниже — без дубля summary);
         # упавшая: summary в заголовке (причина тревоги сразу видна).
+        framed = symptom_frame(cid, status, summary)
         if status is True:
             dl.append(f"{icon[status]} {cid}. {name}")
         else:
-            dl.append(f"{icon[status]} {cid}. {name} — {summary}")
+            dl.append(f"{icon[status]} {cid}. {name} — {framed}")
         if cid in CAT_HINT:
             dl.append(f"    💡 {CAT_HINT[cid]}")
         for d in details:
@@ -1024,6 +1119,10 @@ def build_report(full=False):
     dl.append(f"    · ⚡ load   : {trend['load_pct']['spark']}  ({trend['load_pct']['cur']}%)")
     dl.append(f"    · 🧠 vectors: {trend['vectors']['spark']}  ({trend['vectors']['cur']})")
 
+    if daily:
+        dl.append("")
+        dl += daily_summary(hist)
+
     q = get_random_quote()
     if q:
         dl.append("")
@@ -1037,8 +1136,10 @@ if __name__ == "__main__":
         print(selftest_report())
         ping_healthchecks()
     else:
-        full = "--full" in sys.argv
-        report = build_report(full=full)
-        print(report)
-        notify_fallback(report)
+        full = "--full" in sys.argv or "--daily" in sys.argv
+        daily = "--daily" in sys.argv
+        report = build_report(full=full, daily=daily)
+        if report:
+            print(report)
+            notify_fallback(report)
         ping_healthchecks()
