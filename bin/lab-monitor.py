@@ -87,6 +87,9 @@ QUIET_HOURS_START = int(os.environ.get("QUIET_HOURS_START", "0"))  # МСК ча
 QUIET_HOURS_END   = int(os.environ.get("QUIET_HOURS_END", "8"))    # МСК час окончания (не включая)
 # Ручное заглушение конкретного совета/алерта: {"5": <unix_ts до которого silent>}
 ACK_FILE = os.path.join(STATE_DIR, "ack.json")
+SERVICES_STATE_FILE = os.path.join(STATE_DIR, "services_state.json")
+CRASH_LOOP_DELTA = 3  # рост NRestarts между прогонами >= этого → активная петля
+MONITOR_PORTS = [8710]  # критичные порты для явной проверки (ЗавЛаб, 2026-07-14)
 
 # === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
 # Вместо сухого «X DOWN» — показываем последствие (что сломается у ЗавЛаба).
@@ -660,6 +663,76 @@ def cat_host():
     return status, summary, out
 
 
+def load_services_state():
+    try:
+        with open(SERVICES_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_services_state(state):
+    try:
+        with open(SERVICES_STATE_FILE, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+def cat_services():
+    """Категория 9: системные сервисы (systemd + docker) и критичные порты.
+    Ловит crash-loop (SubState=auto-restart/restarting, рост NRestarts за окно),
+    упавшие юниты (systemctl --state=failed) и неотвечающие порты (MONITOR_PORTS)."""
+    problems = []
+    # 1. упавшие юниты
+    failed_out = run("systemctl --state=failed --type=service --no-legend --no-pager", timeout=10).stdout.strip()
+    failed_units = []
+    for line in failed_out.splitlines():
+        p = line.split()
+        if p:
+            failed_units.append(p[0])
+    for u in failed_units:
+        problems.append(f"{u}: юнит упал (failed)")
+    # 2. юниты с Restart=always/on-failure: NRestarts + SubState
+    state = load_services_state()
+    now_ts = time.time()
+    new_state = {}
+    units_out = run("systemctl list-units --type=service --no-legend --no-pager", timeout=10).stdout.strip()
+    for line in units_out.splitlines():
+        parts = line.split()
+        if not parts or not parts[0].endswith(".service"):
+            continue
+        unit = parts[0]
+        rp = run(f"systemctl show {unit} -p Restart --value", timeout=8).stdout.strip()
+        if rp not in ("always", "on-failure"):
+            continue
+        raw = run(f"systemctl show {unit} -p NRestarts --value", timeout=8).stdout.strip()
+        n = int(raw.split("=")[-1]) if raw and raw.split("=")[-1].isdigit() else 0
+        sub = run(f"systemctl show {unit} -p SubState --value", timeout=8).stdout.strip().split("=")[-1].strip()
+        prev = state.get(unit, {})
+        prev_n = int(prev.get("n", 0) or 0)
+        delta = n - prev_n
+        new_state[unit] = {"n": n, "ts": now_ts}
+        if sub in ("auto-restart", "restarting"):
+            problems.append(f"{unit}: ПЕТЛЯ перезапусков (SubState={sub}, NRestarts={n})")
+        elif delta >= CRASH_LOOP_DELTA:
+            problems.append(f"{unit}: рост перезапусков +{delta} (NRestarts={n})")
+    save_services_state(new_state)
+    # 3. критичные порты
+    for p in MONITOR_PORTS:
+        if not port_ok(p):
+            problems.append(f"порт {p}: не отвечает")
+    details = []
+    if problems:
+        details.append("🔴 проблемы сервисов:")
+        details += [f"  • {x}" for x in problems]
+    else:
+        details.append(f"все юниты стабильны (проверено {len(new_state)})")
+    ok = len(problems) == 0
+    summary = "Сервисы: OK" if ok else f"Сервисы: {len(problems)} пробл."
+    return ok, summary, details
+
+
 def self_factcheck(results):
     """Встроенный гард честности. Ловит самого себя: противоречие между
     заголовком (summary/иконка) и деталями/порогами. Без этого монитор может
@@ -795,6 +868,7 @@ CATEGORIES = [
     (6, "Сеть",          cat_network),
     (7, "Проекты",       cat_projects),
     (8, "Сервер",       cat_host),
+    (9, "Сервисы",      cat_services),
 ]
 
 
