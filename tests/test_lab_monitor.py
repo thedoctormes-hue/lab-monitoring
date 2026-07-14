@@ -159,6 +159,12 @@ def _mock_run(cmd, **kw):
         r.stdout = "searxng\napi-hub-db-1\namnezia-awg2"
     elif "nproc" in cmd:
         r.stdout = "4"
+    elif "systemctl list-units" in cmd:
+        r.stdout = ""
+    elif "systemctl --state=failed" in cmd:
+        r.stdout = ""
+    elif "systemctl show" in cmd and "ExecStart" in cmd:
+        r.stdout = ""
     elif "systemctl show" in cmd and "NRestarts" in cmd:
         r.stdout = "NRestarts=6"
     elif "journalctl" in cmd:
@@ -185,7 +191,7 @@ def test_all_categories_mocked():
     M.run = _mock_run
     try:
         for fn in [M.cat_agents, M.cat_openclaw, M.cat_mcp, M.cat_memory,
-                   M.cat_data, M.cat_network, M.cat_projects, M.cat_host]:
+                   M.cat_data, M.cat_network, M.cat_projects, M.cat_host, M.cat_services]:
             ok, summary, out = fn()
             assert isinstance(summary, str) and len(summary) > 0, (fn, summary)
             assert isinstance(out, list)
@@ -499,7 +505,7 @@ def test_main_entrypoint():
     g = {
         "__name__": "__main__",
         "__file__": M.__file__,
-        "run": lambda cmd, **k: FakeRes("active" if "is-active" in cmd else ""),
+        "run": _mock_run,
         "port_ok": lambda p, host="127.0.0.1", timeout=3: True,
         "get_random_quote": lambda: "q",
         "doctor_warnings": lambda: {"count": 0, "new": [], "all": []},
@@ -604,7 +610,7 @@ def test_collapse_to_green(monkeypatch, tmp_path):
         short = M.build_report(full=False)
         # коллапс: категории НЕ перечисляются при OK
         assert "✅ Агенты" not in short
-        assert "8/8" in short
+        assert "9/9" in short
         assert "💾" in short and "🧠" in short and "⚡" in short
         assert "ℹ️ полный дамп — !подробно" in short
     finally:
@@ -788,6 +794,50 @@ def test_cat_data_postgres_native():
         M.run = orig
 
 
+def test_cat_services_crash_loop(tmp_path, monkeypatch):
+    orig_run, orig_port = M.run, M.port_ok
+    orig_state = M.SERVICES_STATE_FILE
+    M.SERVICES_STATE_FILE = str(tmp_path / "svc.json")
+    def _r(cmd, **k):
+        if "systemctl --state=failed" in cmd:
+            return FakeRes("")
+        if "systemctl list-units" in cmd:
+            return FakeRes("orex.service loaded active auto-restart  orex uvicorn main:app")
+        if "ExecStart" in cmd:
+            return FakeRes("/usr/local/bin/uvicorn main:app --host 0.0.0.0 --port 8710 --workers 1")
+        if "NRestarts" in cmd:
+            return FakeRes("100")
+        if "Restart" in cmd:
+            return FakeRes("on-failure")
+        if "SubState" in cmd:
+            return FakeRes("auto-restart")
+        return FakeRes("")
+    M.run = _r
+    M.port_ok = lambda p, host="127.0.0.1", timeout=3: p != 8710  # 8710 down
+    try:
+        ok, s, o = M.cat_services()
+        assert ok is False, (s, o)
+        assert any("orex" in x and "SUB=auto-restart" in x for x in o), o
+        assert any("8710" in x for x in o), o
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+        M.SERVICES_STATE_FILE = orig_state
+
+
+def test_cat_services_ok(tmp_path, monkeypatch):
+    orig_run, orig_port = M.run, M.port_ok
+    orig_state = M.SERVICES_STATE_FILE
+    M.SERVICES_STATE_FILE = str(tmp_path / "svc.json")
+    M.run = _mock_run
+    M.port_ok = lambda *a, **k: True
+    try:
+        ok, s, o = M.cat_services()
+        assert ok is True, (s, o)
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+        M.SERVICES_STATE_FILE = orig_state
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
     test_all_categories_mocked()
@@ -826,3 +876,38 @@ if __name__ == "__main__":
     test_gateway_latency_in_output()
     test_cat_data_postgres_native()
     print("ALL TESTS PASSED")
+
+
+def test_build_hourly_events():
+    cur = {"cat_fails": ["9"], "cat_services_details": ["orex auto-restart"],
+           "disk_pct": 80, "load_pct": 50, "vectors": 37000, "open_incidents": 11}
+    prev = {"cat_fails": [], "cat_services_details": [],
+            "disk_pct": 79, "load_pct": 49, "vectors": 37596, "open_incidents": 10}
+    ev = M.build_hourly_events(cur, prev)
+    joined = "\n".join(ev)
+    assert "НОВАЯ проблема [9]" in joined
+    assert "orex auto-restart" in joined
+    assert "диск: +1" in joined
+    assert "инциденты: +1" in joined
+    # без prev — пусто
+    assert M.build_hourly_events(cur, None) == []
+
+
+def test_hourly_report_no_quote_no_repeat():
+    orig = (M.run, M.load_metrics_history, M.save_metrics_history,
+             M.load_advice_state, M.load_ack, M.doctor_warnings, M.quiet_hours_active)
+    M.run = _mock_run
+    M.load_metrics_history = lambda: []
+    M.save_metrics_history = lambda h: None
+    M.load_advice_state = lambda: {}
+    M.load_ack = lambda: {}
+    M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
+    M.quiet_hours_active = lambda: False
+    try:
+        rep = M.build_report(full=False, daily=False)
+    finally:
+        (M.run, M.load_metrics_history, M.save_metrics_history,
+         M.load_advice_state, M.load_ack, M.doctor_warnings,
+         M.quiet_hours_active) = orig
+    assert "Цитата часа" not in rep, "цитата не должна быть в hourly"
+    assert "↺ повтор" not in rep, "повтор cooldown не должен быть в hourly"

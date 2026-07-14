@@ -1022,6 +1022,42 @@ def daily_summary(hist):
     return lines
 
 
+def build_hourly_events(cur, prev):
+    """Секция «События за час»: delta текущего прогона с предыдущим.
+    Показывает ЧТО ИЗМЕНИЛОСЬ за час (новые/решённые проблемы, сервисы, метрики),
+    а не статичный снимок и не старые повторы советов."""
+    if not prev:
+        return []
+    lines = []
+    # категории: новые 🔴 / решённые ✅
+    cf = set(cur.get("cat_fails", []))
+    pf = set(prev.get("cat_fails", []))
+    for cid in sorted(cf - pf):
+        lines.append(f"  • 🔴 НОВАЯ проблема [{cid}]")
+    for cid in sorted(pf - cf):
+        lines.append(f"  • ✅ РЕШЕНО [{cid}]")
+    # сервисы (cid 9): появившиеся/исчезнувшие строки проблем
+    csd = cur.get("cat_services_details", []) or []
+    psd = prev.get("cat_services_details", []) or []
+    if isinstance(csd, str):
+        csd = [csd]
+    if isinstance(psd, str):
+        psd = [psd]
+    for d in csd:
+        if d not in psd:
+            lines.append(f"  • ▲ {d}")
+    for d in psd:
+        if d not in csd:
+            lines.append(f"  • ▼ {d}")
+    # метрики: delta (диск/load/vectors/инциденты)
+    for key, label in [("disk_pct", "диск"), ("load_pct", "load"),
+                          ("vectors", "vectors"), ("open_incidents", "инциденты")]:
+        d = (cur.get(key, 0) or 0) - (prev.get(key, 0) or 0)
+        if d:
+            lines.append(f"  • {label}: {'+' if d > 0 else ''}{d}")
+    return lines
+
+
 def build_report(full=False, daily=False):
     results, fails = [], []
     for cid, name, fn in CATEGORIES:
@@ -1043,8 +1079,16 @@ def build_report(full=False, daily=False):
     # --- метрики + тренд (независимый замер, история для дельт/sparkline) ---
     cur = collect_metrics()
     cur["categories_ok"] = score
+    cur["cat_fails"] = sorted(str(c[0]) for c in fails)
+    # детали сервисов (cid 9) — для дельты «события за час»
+    svc_details = []
+    for cid, name, status, summary, details in results:
+        if cid == 9:
+            svc_details = list(details)
+    cur["cat_services_details"] = svc_details
     hist = load_metrics_history()
     trend = compute_trend(hist, cur)
+    prev_run = hist[-1] if hist else None
     hist.append(cur)
     save_metrics_history(hist)
 
@@ -1085,10 +1129,13 @@ def build_report(full=False, daily=False):
     # --- COLLAPSE-TO-GREEN: когда всё OK — минимум строк (борьба с alert fatigue) ---
     if overall == "OK" and not full and not sf:
         cl = [header, signals_line]
+        events = build_hourly_events(cur, prev_run)
+        if events:
+            cl.append("⚡ События за час:")
+            cl += events
         dl_doc = doctor_line()
         if dl_doc:
             cl.append(dl_doc)
-        cl += quote_block()
         cl.append("ℹ️ полный дамп — !подробно")
         return "\n".join(cl)
 
@@ -1105,7 +1152,7 @@ def build_report(full=False, daily=False):
     # слой реагирования (advise) — умный совет по провалу, иначе fallback на маршрут.
     # Гарды (DDP 2026-07-13): dedup по ключу инцидента + cooldown + circuit-breaker.
     if fails:
-        lines.append("🔧 СОВЕТ (без «го» не спавню):")
+        advice_lines = []
         details_by_cid = {cid: details for cid, name, status, summary, details in results}
         advice_state = load_advice_state()
         ack_state = load_ack()
@@ -1114,24 +1161,24 @@ def build_report(full=False, daily=False):
         fail_cids = {str(c[0]) for c in fails}
         for cid, name, summary in fails:
             if is_acked(cid, now_ts, ack_state):
-                lines.append(f"  → [{cid}] {name}: 🔕 заглушено (ack до {fmt_ts(ack_state.get(str(cid), now_ts))})")
+                advice_lines.append(f"  → [{cid}] {name}: 🔕 заглушено (ack до {fmt_ts(ack_state.get(str(cid), now_ts))})")
                 continue
             st = advice_state.get(str(cid), {"last_ts": 0.0, "count": 0, "cooldown_until": 0.0})
             if now_ts < st.get("cooldown_until", 0.0):
-                lines.append(f"  → [{cid}] {name}: ↺ повтор (совет дан ранее; cooldown до {fmt_ts(st['cooldown_until'])})")
+                # старый совет в cooldown — не дублируем (убираем «старьё»)
                 continue
             fn = ADVICE.get(cid)
             if fn:
                 ctx = summary + "\n" + "\n".join(details_by_cid.get(cid, []))
                 advice = fn(False, summary, ctx)
-                lines.append(f"  → [{cid}] {name}: {advice}")
+                advice_lines.append(f"  → [{cid}] {name}: {advice}")
             else:
-                lines.append(f"  → [{cid}] {name}: спавнить {ROUTE.get(cid,'?')} с набором [{ROUTE_SKILLS}]")
+                advice_lines.append(f"  → [{cid}] {name}: спавнить {ROUTE.get(cid,'?')} с набором [{ROUTE_SKILLS}]")
             st["last_ts"] = now_ts
             st["count"] = st.get("count", 0) + 1
             st["cooldown_until"] = now_ts + ADVISE_COOLDOWN_S
             if st["count"] >= ADVISE_CIRCUIT_K:
-                lines.append(f"  ⛔ circuit-breaker: [{cid}] — советы остановлены после {st['count']} попыток (нужен «го»/ручное расследование)")
+                advice_lines.append(f"  ⛔ circuit-breaker: [{cid}] — советы остановлены после {st['count']} попыток (нужен «го»/ручное расследование)")
             advice_state[str(cid)] = st
             changed = True
         # сброс состояния для решённых инцидентов
@@ -1141,12 +1188,21 @@ def build_report(full=False, daily=False):
                 changed = True
         if changed:
             save_advice_state(advice_state)
+        if advice_lines:
+            lines.append("🔧 СОВЕТ (без «го» не спавню):")
+            lines += advice_lines
+
+    # секция «События за час» — что ИЗМЕНИЛОСЬ за последний час
+    events = build_hourly_events(cur, prev_run)
+    if events:
+        lines.append("⚡ События за час:")
+        lines += events
 
     if not full:
         dl_doc = doctor_line()
         if dl_doc:
             lines.append(dl_doc)
-        lines += quote_block()
+        # ЦИТАТА ЧАСА — убрана из hourly (ЗавЛаб: не старьё)
         lines.append("ℹ️ полный дамп — !подробно")
         return "\n".join(lines)
 
