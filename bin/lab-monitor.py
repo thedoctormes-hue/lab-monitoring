@@ -22,6 +22,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 
 PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(os.path.join(PARENT, "src"))  # import lab_monitoring (единый источник порогов) при запуске как скрипта
@@ -89,7 +90,7 @@ QUIET_HOURS_END   = int(os.environ.get("QUIET_HOURS_END", "8"))    # МСК ча
 ACK_FILE = os.path.join(STATE_DIR, "ack.json")
 SERVICES_STATE_FILE = os.path.join(STATE_DIR, "services_state.json")
 CRASH_LOOP_DELTA = 3  # рост NRestarts между прогонами >= этого → активная петля
-MONITOR_PORTS = [8710]  # критичные порты для явной проверки (ЗавЛаб, 2026-07-14)
+MONITOR_PORTS = [8710, 5432, 18789, 8086, 8087, 8888]  # критичные порты (ЗавЛаб 2026-07-14: 8710; + PostgreSQL/gateway/MCP)
 
 # === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
 # Вместо сухого «X DOWN» — показываем последствие (что сломается у ЗавЛаба).
@@ -679,49 +680,73 @@ def save_services_state(state):
         pass
 
 
+def extract_ports(text):
+    """Извлекает номера портов из строки запуска (--port N, -p N, :NNNN)."""
+    ports = set()
+    for m in re.finditer(r"--port[ =](\d+)|-p[ =](\d+)|(?::)(\d{2,5})\b", text):
+        p = m.group(1) or m.group(2) or m.group(3)
+        if p:
+            try:
+                ports.add(int(p))
+            except Exception:
+                pass
+    return ports
+
+
 def cat_services():
-    """Категория 9: системные сервисы (systemd + docker) и критичные порты.
+    """Категория 9: системные сервисы (systemd) и зарегистрированные порты.
     Ловит crash-loop (SubState=auto-restart/restarting, рост NRestarts за окно),
-    упавшие юниты (systemctl --state=failed) и неотвечающие порты (MONITOR_PORTS)."""
+    упавшие юниты (systemctl --state=failed), неслушающие порты из ExecStart юнитов
+    и неотвечающие критичные порты (MONITOR_PORTS)."""
     problems = []
-    # 1. упавшие юниты
+    # 1. упавшие юниты (явно)
     failed_out = run("systemctl --state=failed --type=service --no-legend --no-pager", timeout=10).stdout.strip()
     failed_units = []
-    for line in failed_out.splitlines():
-        p = line.split()
-        if p:
-            failed_units.append(p[0])
+    for ln in failed_out.splitlines():
+        parts = ln.split()
+        if not parts:
+            continue
+        failed_units.append(parts[1] if parts[0] == "●" else parts[0])
     for u in failed_units:
         problems.append(f"{u}: юнит упал (failed)")
-    # 2. юниты с Restart=always/on-failure: NRestarts + SubState
+    # 2. все service-юниты: SUB (бесплатно из list-units) + порты из ExecStart + NRestarts
     state = load_services_state()
     now_ts = time.time()
     new_state = {}
     units_out = run("systemctl list-units --type=service --no-legend --no-pager", timeout=10).stdout.strip()
     for line in units_out.splitlines():
-        parts = line.split()
-        if not parts or not parts[0].endswith(".service"):
+        parts = line.split(None, 4)
+        if len(parts) < 4:
             continue
-        unit = parts[0]
-        rp = run(f"systemctl show {unit} -p Restart --value", timeout=8).stdout.strip()
-        if rp not in ("always", "on-failure"):
+        unit, _load, _active, sub = parts[0], parts[1], parts[2], parts[3]
+        if not unit.endswith(".service"):
             continue
-        raw = run(f"systemctl show {unit} -p NRestarts --value", timeout=8).stdout.strip()
-        n = int(raw.split("=")[-1]) if raw and raw.split("=")[-1].isdigit() else 0
-        sub = run(f"systemctl show {unit} -p SubState --value", timeout=8).stdout.strip().split("=")[-1].strip()
-        prev = state.get(unit, {})
-        prev_n = int(prev.get("n", 0) or 0)
-        delta = n - prev_n
-        new_state[unit] = {"n": n, "ts": now_ts}
-        if sub in ("auto-restart", "restarting"):
-            problems.append(f"{unit}: ПЕТЛЯ перезапусков (SubState={sub}, NRestarts={n})")
-        elif delta >= CRASH_LOOP_DELTA:
-            problems.append(f"{unit}: рост перезапусков +{delta} (NRestarts={n})")
+        # SUB-проблемы для ВСЕХ юнитов (бесплатно из list-units)
+        if sub in ("failed", "auto-restart", "restarting"):
+            problems.append(f"{unit}: SUB={sub}")
+        # порты из ExecStart для активных юнитов
+        if sub in ("running", "auto-restart"):
+            execstart = run(f"systemctl show {unit} -p ExecStart --value", timeout=8).stdout
+            for p in extract_ports(execstart):
+                if not port_ok(p):
+                    problems.append(f"{unit}: порт {p} не отвечает")
+        # NRestarts только для restart-policy юнитов (ловит тихие петли)
+        if sub == "running":
+            rp = run(f"systemctl show {unit} -p Restart --value", timeout=8).stdout.strip()
+            if rp in ("always", "on-failure"):
+                raw = run(f"systemctl show {unit} -p NRestarts --value", timeout=8).stdout.strip()
+                n = int(raw.split("=")[-1]) if raw and raw.split("=")[-1].isdigit() else 0
+                prev = state.get(unit, {})
+                prev_n = int(prev.get("n", 0) or 0)
+                delta = n - prev_n
+                new_state[unit] = {"n": n, "ts": now_ts}
+                if delta >= CRASH_LOOP_DELTA:
+                    problems.append(f"{unit}: рост перезапусков +{delta} (NRestarts={n})")
     save_services_state(new_state)
-    # 3. критичные порты
+    # 3. критичные порты (явный список)
     for p in MONITOR_PORTS:
         if not port_ok(p):
-            problems.append(f"порт {p}: не отвечает")
+            problems.append(f"порт {p}: не отвечает (критичный)")
     details = []
     if problems:
         details.append("🔴 проблемы сервисов:")
