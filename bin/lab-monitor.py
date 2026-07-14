@@ -42,8 +42,8 @@ QUOTE_FILE = "/root/LabDoctorM/workspaces/dominika/nevermind.md"
 # === ПОРОГИ ЧЕСТНОСТИ (каждый — откуда норма) ===
 # Монитор обязан сверять значения именно с этими порогами, а не с "магическими числами".
 THRESHOLDS = {
-    "disk_warn_pct": 85,    # норма <85%  (источник: ADR-039, практика ротации диска лаборатории)
-    "disk_crit_pct": 95,    # КРИТ     >=95% (диск почти полон)
+    "disk_warn_pct": 80,    # норма <80%  (источник: ADR-039, практика ротации диска лаборатории)
+    "disk_crit_pct": 90,    # КРИТ     >=90% (диск почти полон)
     "nrestarts_ok": 5,      # оставлено для ПРОЧИХ сервисов (накопленный lifetime-порог). Для gateway — см. оконную логику ниже.
     "restart_window": "1h", # ОКНО отчёта = час (cron heartbeat-dominika: 0 * * * * MSK). Источник: логика ЗавЛаба 2026-07-13 — отчёт приходит каждый час, перезапуски считаем за это окно, чтобы сверять с памятью «я сам рестартил?».
     "nrestarts_window_auto_ok": 0,  # авто-перезапусков (systemd сам поднял после падения) за окно: норма 0; >=1 → 🔴 подозрительно. Ручные рестарты ЗавЛаб знает/ожидает; авто = нежданное падение.
@@ -90,6 +90,7 @@ QUIET_HOURS_END   = int(os.environ.get("QUIET_HOURS_END", "8"))    # МСК ча
 ACK_FILE = os.path.join(STATE_DIR, "ack.json")
 SERVICES_STATE_FILE = os.path.join(STATE_DIR, "services_state.json")
 CRASH_LOOP_DELTA = 3  # рост NRestarts между прогонами >= этого → активная петля
+NRESTARTS_LIFETIME_WARN = 20  # накопленный (lifetime) NRestarts >= этого → хронический рестарт (виден без активной петли за час)
 MONITOR_PORTS = [8710, 5432, 18789, 8086, 8087, 8888]  # критичные порты (ЗавЛаб 2026-07-14: 8710; + PostgreSQL/gateway/MCP)
 
 # === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
@@ -256,13 +257,15 @@ ADVICE = {
                     else "gateway ок — действий нет")),
     3: lambda ok, s, d: "упавшие MCP: проверь systemctl status mcp-* и порты; при необходимости restart"
         if not ok else "MCP ок — действий нет",
-    4: lambda ok, s, d: ("ONNX :8082 DOWN → systemctl status onnx-embedder.service; sudo journalctl -u onnx-embedder --since '-15m'"
-        if "onnx" in d.lower() and "down" in d.lower()
-        else ("lab_search FAIL → запусти reindex: python3 /root/LabDoctorM/projects/lab-memory/scripts/reindex.py --incremental"
-              if "fail" in d.lower() and "reindex active" not in d.lower()
-              else ("reindex уже идёт — НЕ запускай второй раз; дождись завершения"
-                    if "reindex active" in d.lower()
-                    else "проверь ONNX/embedding и lab_search vectors"))),
+    4: lambda ok, s, d: ("ONNX embedder FAIL → systemctl status onnx-embedder.service; sudo journalctl -u onnx-embedder --since '-15m'; проверь :8082 /health"
+        if "onnx_embedder=FAIL" in d
+        else ("reindex-incremental.service FAILED → systemctl restart reindex-incremental.service; journalctl -u reindex-incremental.service --since '-30m'"
+              if "reindex_service=failed" in d
+              else ("reindex уже идёт (таймер active) — НЕ запускай второй раз; дождись завершения"
+                    if "reindex_timer=active" in d
+                    else ("lab_search FAIL → запусти reindex: python3 /root/LabDoctorM/projects/lab-memory/scripts/reindex.py --incremental"
+                          if "fail" in d.lower()
+                          else "проверь ONNX/embedding и lab_search vectors")))),
     5: lambda ok, s, d: ("PostgreSQL DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
         if "pg" in d.lower() and "down" in d.lower()
         else ("disk высокий → du -sh /var /tmp /root 2>/dev/null; найди и очисти (trash > rm), но сначала фактчек"
@@ -301,7 +304,7 @@ CAT_HINT = {
        "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
     4: "Семантический поиск лабы (ONNX + FAISS). vectors — сколько записей в индексе. reindex = авто-обновление.",
-    5: "Базы и диск. disk — заполненность; норма <85%, тревога с 85%, крит 95%.",
+    5: "Базы и диск. disk — заполненность; норма <80%, тревога с 80%, крит 90%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
     8: "Железо. load — загрузка CPU (норма < числа ядер). RAM — занято/всего; available = сколько реально доступно приложениям (free + reclaimable cache, buff/cache). total = used + free + buff/cache.",
@@ -480,22 +483,30 @@ def cat_mcp():
 
 
 def cat_memory():
-    onnx = port_ok(8082)
     ls = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py health",
              timeout=45, cwd="/root/LabDoctorM/projects/lab-memory")
-    ls_ok, vec = False, "?"
+    ls_ok, vec, onnx_available = False, "?", None
     if ls and ls.stdout:
         try:
             d = json.loads(ls.stdout)
-            ls_ok = bool(d.get("faiss_loaded") and d.get("onnx_available") and d.get("vectors", 0) > 0)
+            onnx_available = d.get("onnx_available")          # ← структурированный сигнал
+            ls_ok = bool(d.get("faiss_loaded") and onnx_available and d.get("vectors", 0) > 0)
             vec = d.get("vectors", "?")
         except Exception:
             pass
+    onnx_port = port_ok(8082)
+    onnx_embedder_ok = bool(onnx_available)                   # ← False при сломанном эмбеддере
+    onnx_ok = bool(onnx_port and onnx_embedder_ok)            # ← функционально, не только TCP
     ri = run("systemctl is-active reindex-incremental.timer reindex-full.timer", timeout=6)
     ri_active = bool(ri and "active" in ri.stdout)
-    ok = onnx and ls_ok
-    detail = f"ONNX :8082 {'ok' if onnx else 'DOWN'}; lab_search vectors={vec} {'ok' if ls_ok else 'FAIL'}; reindex {'active' if ri_active else 'off'}"
-    return ok, detail, [f"reindex-incremental.timer: {'active' if ri_active else 'off'}"]
+    ri_fail = run("systemctl is-failed reindex-incremental.service", timeout=6)
+    ri_failed = bool(ri_fail and "failed" in ri_fail.stdout)
+    ok = onnx_ok and ls_ok and (not ri_failed)
+    detail = (f"ONNX :8082 {'up' if onnx_port else 'DOWN'} (onnx_embedder={'OK' if onnx_embedder_ok else 'FAIL'}); "
+              f"lab_search vectors={vec} {'ok' if ls_ok else 'FAIL'}; "
+              f"reindex_timer={'active' if ri_active else 'off'}; reindex_service={'failed' if ri_failed else 'ok'}")
+    return ok, detail, [f"reindex-incremental.timer: {'active' if ri_active else 'off'}",
+                        f"reindex-incremental.service: {'failed' if ri_failed else 'active'}"]
 
 
 def cat_data():
@@ -749,8 +760,13 @@ def cat_services():
                 prev_n = int(prev.get("n", 0) or 0)
                 delta = n - prev_n
                 new_state[unit] = {"n": n, "ts": now_ts}
-                if delta >= CRASH_LOOP_DELTA:
-                    problems.append(f"{unit}: рост перезапусков +{delta} (NRestarts={n})")
+                if delta >= CRASH_LOOP_DELTA or n >= NRESTARTS_LIFETIME_WARN:
+                    parts = []
+                    if delta >= CRASH_LOOP_DELTA:
+                        parts.append(f"дельта +{delta} за час")
+                    if n >= NRESTARTS_LIFETIME_WARN:
+                        parts.append(f"lifetime {n}")
+                    problems.append(f"{unit}: перезапуски ({'; '.join(parts)})")
     save_services_state(new_state)
     # 3. критичные порты (явный список)
     for p in MONITOR_PORTS:
