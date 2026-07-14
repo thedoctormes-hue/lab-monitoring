@@ -147,6 +147,8 @@ def _mock_run(cmd, **kw):
         r.stdout = "1.50 1.20 1.00"
     elif "free -m" in cmd:
         r.stdout = "4000 7937 1000 2000 4937"
+    elif "pg_isready" in cmd:
+        r.stdout = "accepting connections"
     elif "docker ps" in cmd and "api-hub-db-1" in cmd:
         r.stdout = "Up 4 days"
     elif "docker ps" in cmd and "amnezia" in cmd:
@@ -343,8 +345,8 @@ def test_cat_data_disk():
     for disk, ok_expected, hint in [("78%", True, "ок"), ("86%", "warn", "близко к порогу"),
                                      ("96%", False, "КРИТ"), ("?", True, "ок")]:
         def _r(cmd, **k):
-            if "docker ps" in cmd and "api-hub-db-1" in cmd:
-                return FakeRes("Up 4 days")
+            if "pg_isready" in cmd:
+                return FakeRes("accepting connections")
             if "df -h /" in cmd:
                 return FakeRes(disk)
             return FakeRes("")
@@ -493,6 +495,7 @@ def test_build_report_advice_gateway_down(tmp_path, monkeypatch):
 def test_main_entrypoint():
     import sys as _sys
     import io
+    import contextlib
     g = {
         "__name__": "__main__",
         "__file__": M.__file__,
@@ -503,13 +506,11 @@ def test_main_entrypoint():
     }
     argv_save = _sys.argv
     out_buf = io.StringIO()
-    old_out = _sys.stdout
     _sys.argv = ["lab-monitor.py", "--full"]
     try:
-        _sys.stdout = out_buf
-        exec(compile(open(M.__file__).read(), M.__file__, "exec"), g)
+        with contextlib.redirect_stdout(out_buf):
+            exec(compile(open(M.__file__).read(), M.__file__, "exec"), g)
     finally:
-        _sys.stdout = old_out
         _sys.argv = argv_save
     assert "ЛабМонитор" in out_buf.getvalue()
 
@@ -592,11 +593,12 @@ def test_collapse_to_green(monkeypatch, tmp_path):
         return FakeRes("")
     orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
     orig_categories = M.CATEGORIES
-    M.run = _ok
+    M.run = _mock_run
     M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
     M.get_random_quote = lambda: "цитата"
     M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
     M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
+    monkeypatch.setattr(M, "QUIET_HOURS_END", 0)  # отключаем тихие часы в тесте
     monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
     try:
         short = M.build_report(full=False)
@@ -614,6 +616,8 @@ def test_severity_warn_shows(monkeypatch, tmp_path):
     def _warn_disk(cmd, **k):
         if "is-active" in cmd:
             return FakeRes("active")
+        if "pg_isready" in cmd:
+            return FakeRes("accepting connections")
         if "docker ps" in cmd:
             return FakeRes("Up 4 days")
         if "df -h /" in cmd:
@@ -644,9 +648,11 @@ def test_severity_warn_shows(monkeypatch, tmp_path):
     M.get_random_quote = lambda: "цитата"
     M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
     M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
+    monkeypatch.setattr(M, "QUIET_HOURS_END", 0)  # отключаем тихие часы в тесте
     monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
     try:
         short = M.build_report(full=False)
+        # overall ВНИМАНИЕ (warn по диску), категории видны (не коллапс)
         assert "ВНИМАНИЕ" in short            # overall-уровень
         assert "⚠️ Данные" in short           # warn-категория видна
         assert "✅ Агенты" in short           # остальные OK видны (не коллапс)
@@ -743,6 +749,8 @@ def test_daily_digest(tmp_path):
     orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
     orig_categories = M.CATEGORIES
     orig_hist = M.METRICS_HISTORY_FILE
+    orig_qend = M.QUIET_HOURS_END
+    M.QUIET_HOURS_END = 0  # отключаем тихие часы в тесте
     M.run = _mock_run
     M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
     M.get_random_quote = lambda: "цитата"
@@ -756,6 +764,28 @@ def test_daily_digest(tmp_path):
         M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
         M.CATEGORIES = orig_categories
         M.METRICS_HISTORY_FILE = orig_hist
+        M.QUIET_HOURS_END = orig_qend
+
+
+def test_cat_data_postgres_native():
+    orig = M.run
+    def _r(cmd, **k):
+        if "pg_isready" in cmd:
+            return FakeRes("accepting connections")
+        if "df -h /" in cmd:
+            return FakeRes("50%")
+        if "git status" in cmd:
+            return FakeRes("0")
+        return FakeRes("")
+    M.run = _r
+    try:
+        ok, s, o = M.cat_data()
+        assert ok is True, s
+        assert "PostgreSQL up" in s, s
+        assert "PostgreSQL(:5432): up" in o[0], o
+        assert "disk 50%" in s, s
+    finally:
+        M.run = orig
 
 
 if __name__ == "__main__":
@@ -794,4 +824,5 @@ if __name__ == "__main__":
     test_quiet_hours_active()
     test_symptom_frame()
     test_gateway_latency_in_output()
+    test_cat_data_postgres_native()
     print("ALL TESTS PASSED")

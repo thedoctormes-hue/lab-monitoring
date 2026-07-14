@@ -496,10 +496,11 @@ def cat_memory():
 
 def cat_data():
     out = []
-    # PostgreSQL (docker api-hub-db-1)
-    pg = run("docker ps --filter name=api-hub-db-1 --format '{{.Status}}'", timeout=8)
-    pg_up = bool(pg and pg.stdout.strip() and "Up" in pg.stdout)
-    out.append(f"PostgreSQL(api-hub-db-1): {'up' if pg_up else 'DOWN/off'}")
+    # PostgreSQL — нативный (systemd) на :5432, а НЕ docker-контейнер api-hub-db-1.
+    # Проект api-hub удалён, БД живёт в systemd-сервисе postgresql (данные в /var/lib/postgresql).
+    pg = run("pg_isready -h 127.0.0.1 -p 5432", timeout=8)
+    pg_up = bool(pg and pg.stdout and "accepting connections" in pg.stdout)
+    out.append(f"PostgreSQL(:5432): {'up' if pg_up else 'DOWN'}")
     # SQLite state
     sq = "/root/.openclaw/state/openclaw.sqlite"
     sq_ok = os.path.isfile(sq) and os.path.getsize(sq) > 0
@@ -727,8 +728,8 @@ def independent_probe():
             pass
     probe[4] = f"lab_search vectors: {vec}"
     df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
-    pg = run("docker ps --filter name=api-hub-db-1 --format '{{.Status}}'", timeout=8)
-    probe[5] = f"disk {df.stdout.strip() if df else '?'} | PostgreSQL {'Up' if pg and 'Up' in pg.stdout else 'DOWN'}"
+    pg = run("pg_isready -h 127.0.0.1 -p 5432", timeout=8)
+    probe[5] = f"disk {df.stdout.strip() if df else '?'} | PostgreSQL {'up' if pg and 'accepting connections' in pg.stdout else 'DOWN'}"
     vpn = run("docker ps --filter name=amnezia-awg2 --format '{{.Status}}'", timeout=8)
     sx = port_ok(8889)
     ssl = run("echo | timeout 8 openssl s_client -servername shtab-ai.ru -connect shtab-ai.ru:443 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null", timeout=12)
