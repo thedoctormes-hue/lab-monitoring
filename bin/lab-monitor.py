@@ -91,7 +91,7 @@ ACK_FILE = os.path.join(STATE_DIR, "ack.json")
 SERVICES_STATE_FILE = os.path.join(STATE_DIR, "services_state.json")
 CRASH_LOOP_DELTA = 3  # рост NRestarts между прогонами >= этого → активная петля
 NRESTARTS_LIFETIME_WARN = 20  # накопленный (lifetime) NRestarts >= этого → хронический рестарт (виден без активной петли за час)
-MONITOR_PORTS = [8710, 5432, 18789, 8086, 8087, 8888]  # критичные порты (ЗавЛаб 2026-07-14: 8710; + PostgreSQL/gateway/MCP)
+MONITOR_PORTS = [5432, 18789, 8086, 8087, 8888]  # критичные порты (PostgreSQL/gateway/MCP/onnx-worker)
 
 # === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
 # Вместо сухого «X DOWN» — показываем последствие (что сломается у ЗавЛаба).
