@@ -680,10 +680,19 @@ def save_services_state(state):
         pass
 
 
+PORT_RE = re.compile(
+    r"--port[ =](\d+)"                                       # --port 8082 / --port=8082
+    r"|-p[ =](\d+)"                                        # -p 8082 / -p=8082
+    r"|(?:(?:\d{1,3}\.){3}\d{1,3}|localhost):(\d{2,5})\b"  # 127.0.0.1:8082 / localhost:5432
+)
+
+
 def extract_ports(text):
-    """Извлекает номера портов из строки запуска (--port N, -p N, :NNNN)."""
+    """Извлекает номера портов из строки запуска (--port N, -p N, host:port).
+    Ловит явные флаги и host:port (IP/localhost). НЕ ловит таймштампы
+    вида start_time=[...HH:MM:SS...] — иначе :MM/:SS превращаются в ложные «порт N»."""
     ports = set()
-    for m in re.finditer(r"--port[ =](\d+)|-p[ =](\d+)|(?::)(\d{2,5})\b", text):
+    for m in PORT_RE.finditer(text):
         p = m.group(1) or m.group(2) or m.group(3)
         if p:
             try:

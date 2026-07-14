@@ -911,3 +911,20 @@ def test_hourly_report_no_quote_no_repeat():
          M.quiet_hours_active) = orig
     assert "Цитата часа" not in rep, "цитата не должна быть в hourly"
     assert "↺ повтор" not in rep, "повтор cooldown не должен быть в hourly"
+
+
+def test_extract_ports_no_timestamp_falsepos():
+    # таймштампы в start_time НЕ должны давать ложные порты
+    ts = "argv[]=/x/y.py ; start_time=[Tue 2026-07-14 13:15:00 UTC] ; status=0/0"
+    assert M.extract_ports(ts) == set()
+    full = ("{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 /x/y.py ; "
+             "start_time=[Tue 2026-07-14 13:15:00 UTC] ; pid=0 ; status=0/0 }")
+    assert M.extract_ports(full) == set()
+
+
+def test_extract_ports_real():
+    assert M.extract_ports("--port 18789") == {18789}
+    assert M.extract_ports("-p 5432") == {5432}
+    assert M.extract_ports("gunicorn --bind 0.0.0.0:8082") == {8082}
+    assert M.extract_ports("redis://localhost:6379") == {6379}
+    assert M.extract_ports("bind 127.0.0.1:5432") == {5432}
