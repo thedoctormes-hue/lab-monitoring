@@ -1,8 +1,8 @@
 ---
 description: "lab-monitoring — README"
 type: readme
-last_reviewed: 2026-06-27
-last_code_change: 2026-06-21
+last_reviewed: 2026-07-14
+last_code_change: 2026-07-14
 status: active
 ---
 
@@ -39,6 +39,24 @@ status: active
 - **Правила алертов** — настраиваемые пороги CRITICAL/WARNING
 - **JSON-отчёт** — струксированный вывод для интеграции с Alertmanager и скриптами
 - **Exit code 0** — инструмент отчитывается через JSON, не блокирует CI
+
+## Параметры алертов
+
+Монитор (`bin/lab-monitor.py`) оценивает состояние по порогам из `src/lab_monitoring/thresholds.py`:
+
+- **Диск:** `disk_warn_pct = 80`, `disk_crit_pct = 90` (норма < 80%).
+- **Петли auto-restart:** `NRESTARTS_LIFETIME_WARN = 20` — сервис проблемный при `lifetime ≥ 20` перезапусков (или дельте ≥ `CRASH_LOOP_DELTA` за час).
+- **ONNX-embedder (:8082):** токен `onnx_embedder=OK|FAIL` в категории [4]; при FAIL семантический поиск лабы не работает.
+- **reindex-incremental.service:** детект через `is-failed` (не `is-active`); при FAILED без активного таймера — advice «restart service».
+- **MONITOR_PORTS:** `[5432, 18789, 8086, 8087, 8888]` (порт 8710 orex удалён 2026-07-14 — ложный 🔴).
+
+Запуск:
+
+```bash
+python3 bin/lab-monitor.py            # ежечасный отчёт (OpenClaw cron heartbeat-dominika)
+python3 bin/lab-monitor.py --daily   # ежедневный (09:00 МСК, heartbeat-dominika-daily)
+python3 bin/lab-monitor.py --selftest # self-check
+```
 
 ## Структура проекта
 
