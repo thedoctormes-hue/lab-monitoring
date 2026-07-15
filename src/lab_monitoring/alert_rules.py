@@ -125,7 +125,7 @@ def evaluate_failed_services(services: List[str], config: AlertConfig) -> List[A
         "nginx.service", "postgresql.service", "docker.service",
         "stenographerobot.service", "myrmex-control.service",
         "lab-vault.service", "doctor-m-bot.service", "maildaemonrobot.service",
-        "context-api.service", "autoexpert.service", "consilium.service",
+        "autoexpert.service", "consilium.service",
     }
     alerts = []
     for svc in services:
