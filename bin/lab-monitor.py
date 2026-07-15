@@ -91,7 +91,7 @@ ACK_FILE = os.path.join(STATE_DIR, "ack.json")
 SERVICES_STATE_FILE = os.path.join(STATE_DIR, "services_state.json")
 CRASH_LOOP_DELTA = 3  # рост NRestarts между прогонами >= этого → активная петля
 NRESTARTS_LIFETIME_WARN = 20  # накопленный (lifetime) NRestarts >= этого → хронический рестарт (виден без активной петли за час)
-MONITOR_PORTS = [5432, 18789, 8086, 8087, 8888]  # критичные порты (PostgreSQL/gateway/MCP/onnx-worker)
+MONITOR_PORTS = [5432, 18789, 8086, 8888]  # критичные порты (PostgreSQL/gateway/MCP). 8087/mcp-memory убран: сервис похоронен (ADR-0054, semantic на новом стэке)
 
 # === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
 # Вместо сухого «X DOWN» — показываем последствие (что сломается у ЗавЛаба).
@@ -470,7 +470,7 @@ def cat_openclaw():
 def cat_mcp():
     """Динамически спрашиваем systemd: какие mcp-*.service РЕАЛЬНО запущены.
     Не хардкодим число — чтобы не врать при появлении/удалении сервисов."""
-    known_ports = {"mcp-memory": 8087, "mcp-apikeys": 8086, "mcp-gatekeeper": 8888}
+    known_ports = {"mcp-apikeys": 8086, "mcp-gatekeeper": 8888}
     r = run("systemctl list-units --type=service --state=running 'mcp-*' --no-legend --no-pager", timeout=8)
     services = []
     if r and r.stdout:
@@ -862,7 +862,7 @@ def independent_probe():
             u = line.strip().split()[0] if line.strip() else ""
             if u.endswith(".service") and "heartbeat-collect" not in u:
                 svcs.append(u[:-len(".service")])
-    kp = {"mcp-memory": 8087, "mcp-apikeys": 8086, "mcp-gatekeeper": 8888}
+    kp = {"mcp-apikeys": 8086, "mcp-gatekeeper": 8888}
     up = sum(1 for s in svcs if (port_ok(kp[s]) if s in kp else True))
     probe[3] = f"mcp запущено/порты отвечают: {up}/{len(svcs)}"
     # Семантический стэк deprecated — ONNX health сломан, векторов нет смысла.
