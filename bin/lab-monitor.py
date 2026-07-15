@@ -257,15 +257,13 @@ ADVICE = {
                     else "gateway ок — действий нет")),
     3: lambda ok, s, d: "упавшие MCP: проверь systemctl status mcp-* и порты; при необходимости restart"
         if not ok else "MCP ок — действий нет",
-    4: lambda ok, s, d: ("ONNX embedder FAIL → systemctl status onnx-embedder.service; sudo journalctl -u onnx-embedder --since '-15m'; проверь :8082 /health"
-        if "onnx_embedder=FAIL" in d
-        else ("reindex-incremental.service FAILED → systemctl restart reindex-incremental.service; journalctl -u reindex-incremental.service --since '-30m'"
+    4: lambda ok, s, d: ("лексический поиск FAIL → проверь lab_search.py search; семантика deprecated (ONNX down, новый стэк в работе)"
+        if "lexical=FAIL" in d
+        else ("reindex-призрак FAILED — стэк меняется, не перезапускай; дождись нового реиндекса"
               if "reindex_service=failed" in d
-              else ("reindex уже идёт (таймер active) — НЕ запускай второй раз; дождись завершения"
+              else ("reindex-таймер active (призрак) — стэк меняется, не запускай второй раз"
                     if "reindex_timer=active" in d
-                    else ("lab_search FAIL → запусти reindex: python3 /root/LabDoctorM/projects/lab-memory/scripts/reindex.py --incremental"
-                          if "fail" in d.lower()
-                          else "проверь ONNX/embedding и lab_search vectors")))),
+                    else "память/поиск: семантика на новом стэке, лексика работает — действий нет"))),
     5: lambda ok, s, d: ("PostgreSQL DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
         if "pg" in d.lower() and "down" in d.lower()
         else ("disk высокий → du -sh /var /tmp /root 2>/dev/null; найди и очисти (trash > rm), но сначала фактчек"
@@ -303,7 +301,7 @@ CAT_HINT = {
        "· авто-перезапуски (systemd сам поднял после падения) — 🔴 подозрительно, ищи root-cause\n"
        "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
-    4: "Семантический поиск лабы (ONNX + FAISS). vectors — сколько записей в индексе. reindex = авто-обновление.",
+    4: "Память/поиск: семантический стэк (ONNX+FAISS) deprecated — переезд на новый стэк. Сейчас работает лексический поиск (lab_search), семантика OFF. vectors-метрика deprecated (показывает лексическую живость 1/0). reindex-юниты — призраки, будут пересозданы с новым стэком.",
     5: "Базы и диск. disk — заполненность; норма <80%, тревога с 80%, крит 90%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
@@ -432,16 +430,9 @@ def cat_openclaw():
     jtext = (jl.stdout or "") if jl else ""
     cls = classify_restarts(jtext, nrest, win)
     dw = doctor_warnings()
-    if not active:
-        detail = f"gateway DOWN (история lifetime: {nrest})"
-    elif cls["classification"] == "auto":
-        detail = (f"gateway работает · АВТО-перезапуск за {win}: {cls['auto']} "
-                  f"(systemd сам поднял после падения — 🔴 подозрительно, нужен root-cause)")
-    elif cls["classification"] == "manual":
-        detail = (f"gateway работает · ручных рестартов за {win}: {cls['manual']} "
-                  f"(ты сам делал — ок, сверься с памятью)")
-    else:
-        detail = f"gateway работает · перезапусков за {win}: 0"
+    # === РЕАЛЬНАЯ живость: порт 18789 слушает? (systemd unit-state НЕ показатель:
+    # gateway может быть осиротевшим процессом вне systemd — тогда unit inactive,
+    # но сервис реально доставляет, см. INC от 2026-07-15) ===
     import time as _time
     _t0 = _time.monotonic()
     gw_ok = port_ok(GATEWAY_PORT)
@@ -449,9 +440,30 @@ def cat_openclaw():
     gw_lat_s = f"gateway latency: {gw_lat}ms ({'ok' if gw_ok else 'no response'})"
     if gw_ok and gw_lat >= GATEWAY_LATENCY_WARN_MS:
         gw_lat_s += " · ⚠️ медленный отклик"
-    ok = active and cls["classification"] != "auto" and not dw["new"]
-    # Детали перезапусков — одной строкой (философия/реакция — в CAT_HINT[2]); без дублей.
+    # Детали перезапусков — одной строкой.
     out = [gw_lat_s, f"🔄 перезапуски за {win}: всего {cls['total']} · ручные ~{cls['manual']} · авто {cls['auto']} · lifetime {nrest}"]
+    if not gw_ok:
+        # Порт не слушает = gateway реально лёг → красная (доставка остановлена).
+        ok = False
+        detail = f"gateway DOWN (порт {GATEWAY_PORT} не слушает; доставка остановлена)"
+    else:
+        # Порт слушает = gateway реально работает и доставляет (дошедший отчёт = доказательство).
+        # Только НОВЫЕ замечания doctor могут опустить статус; авто-перезапуски и
+        # осиротевший процесс — это ⚠️ в details, НЕ авария доставки.
+        ok = not dw["new"]
+        if not active:
+            # Осиротевший процесс: systemd-юнит не управляет им → латентный риск, не авария.
+            out.append(f"⚠️ gateway слушает :{GATEWAY_PORT}, но systemd-юнит inactive/dead — "
+                       f"осиротевший процесс; при падении systemd не поднимет (нужен re-parent)")
+            detail = "gateway работает (порт слушает) · вне systemd-присмотра"
+        elif cls["classification"] == "auto":
+            out.append(f"⚠️ АВТО-перезапуск за {win}: {cls['auto']} (systemd сам поднимал после падения — нужен root-cause)")
+            detail = f"gateway работает (порт слушает) · авто-перезапуски за {win}: {cls['auto']}"
+        elif cls["classification"] == "manual":
+            detail = (f"gateway работает (порт слушает) · ручных рестартов за {win}: {cls['manual']} "
+                      f"(ты сам делал — ок, сверься с памятью)")
+        else:
+            detail = f"gateway работает (порт слушает) · перезапусков за {win}: 0"
     return ok, detail, out
 
 
@@ -482,31 +494,43 @@ def cat_mcp():
     return (up == total), f"{up}/{total} работают", out
 
 
+def _lexical_search_works():
+    """Real lexical liveness probe: run a search query, expect JSON list (even empty)."""
+    try:
+        r = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py search \"OpenClaw\" --topN 1 --json",
+                timeout=30, cwd="/root/LabDoctorM/projects/lab-memory")
+        if not r or not r.stdout:
+            return False
+        data = json.loads(r.stdout)
+        return isinstance(data, list)
+    except Exception:
+        return False
+
+
 def cat_memory():
-    ls = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py health",
-             timeout=45, cwd="/root/LabDoctorM/projects/lab-memory")
-    ls_ok, vec, onnx_available = False, "?", None
-    if ls and ls.stdout:
-        try:
-            d = json.loads(ls.stdout)
-            onnx_available = d.get("onnx_available")          # ← структурированный сигнал
-            ls_ok = bool(d.get("faiss_loaded") and onnx_available and d.get("vectors", 0) > 0)
-            vec = d.get("vectors", "?")
-        except Exception:
-            pass
-    onnx_port = port_ok(8082)
-    onnx_embedder_ok = bool(onnx_available)                   # ← False при сломанном эмбеддере
-    onnx_ok = bool(onnx_port and onnx_embedder_ok)            # ← функционально, не только TCP
+    # === Семантический стэк (ONNX+FAISS) ДЕПРЕКЕЙТНУТ (ЗавЛаб, 2026-07-15):
+    # семантика переезжает на другой стэк. ONNX-embedder намеренно остановлен (14.07),
+    # юнит стёрт, :8082 не слушает — это ОЖИДАЕМО, не авария.
+    # Единственный реальный сигнал здоровья памяти = лексический поиск lab_search отвечает.
     ri = run("systemctl is-active reindex-incremental.timer reindex-full.timer", timeout=6)
     ri_active = bool(ri and "active" in ri.stdout)
     ri_fail = run("systemctl is-failed reindex-incremental.service", timeout=6)
     ri_failed = bool(ri_fail and "failed" in ri_fail.stdout)
-    ok = onnx_ok and ls_ok and (not ri_failed)
-    detail = (f"ONNX :8082 {'up' if onnx_port else 'DOWN'} (onnx_embedder={'OK' if onnx_embedder_ok else 'FAIL'}); "
-              f"lab_search vectors={vec} {'ok' if ls_ok else 'FAIL'}; "
+    # Лексический поиск жив? — реальный запрос к lab_search (sem неважен, lex должен отвечать).
+    lex_ok = _lexical_search_works()
+    onnx_port = port_ok(8082)
+    onnx_embedder_ok = onnx_port  # грубый прокси: порт жив = эмбеддер потенциально жив
+    # Алерт НЕ красный из-за ONNX: стэк меняется. Реальный сбой только если лексический поиск мертв.
+    ok = lex_ok
+    semantic_state = "OK" if onnx_embedder_ok else "OFF (deprecated — стэк меняется)"
+    detail = (f"поиск lexical={'ok' if lex_ok else 'FAIL'}; "
+              f"semantic(ONNX)={semantic_state}; "
               f"reindex_timer={'active' if ri_active else 'off'}; reindex_service={'failed' if ri_failed else 'ok'}")
-    return ok, detail, [f"reindex-incremental.timer: {'active' if ri_active else 'off'}",
-                        f"reindex-incremental.service: {'failed' if ri_failed else 'active'}"]
+    out = [f"reindex-incremental.timer: {'active' if ri_active else 'off'} (призрак — стэк меняется)",
+           f"reindex-incremental.service: {'failed' if ri_failed else 'active'} (призрак — стэк меняется)"]
+    if not onnx_embedder_ok:
+        out.append("⚠️ ONNX-embedder deprecated: юнит стёрт, :8082 не слушает — ожидается замена стэка; не авария")
+    return ok, detail, out
 
 
 def cat_data():
@@ -830,8 +854,7 @@ def independent_probe():
     Возвращает {cid: строка_независимого_замера}."""
     probe = {}
     probe[1] = "агенты: живость доказана доставкой отчёта (grimoire.md смержены в nevermind.md)"
-    ra = run("systemctl is-active openclaw-gateway.service", timeout=6)
-    probe[2] = f"gateway: {ra.stdout.strip() if ra else '?'}"
+    probe[2] = f"gateway: {'listening :%d' % GATEWAY_PORT if port_ok(GATEWAY_PORT) else 'DOWN'}"
     r = run("systemctl list-units --type=service --state=running 'mcp-*' --no-legend --no-pager", timeout=8)
     svcs = []
     if r and r.stdout:
@@ -842,14 +865,10 @@ def independent_probe():
     kp = {"mcp-memory": 8087, "mcp-apikeys": 8086, "mcp-gatekeeper": 8888}
     up = sum(1 for s in svcs if (port_ok(kp[s]) if s in kp else True))
     probe[3] = f"mcp запущено/порты отвечают: {up}/{len(svcs)}"
-    ls = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py health", timeout=45, cwd="/root/LabDoctorM/projects/lab-memory")
-    vec = "?"
-    if ls and ls.stdout:
-        try:
-            vec = json.loads(ls.stdout).get("vectors", "?")
-        except Exception:
-            pass
-    probe[4] = f"lab_search vectors: {vec}"
+    # Семантический стэк deprecated — ONNX health сломан, векторов нет смысла.
+    # Проверяем лексическую живость поиска вместо мёртвого health-эндпоинта.
+    lex_ok = _lexical_search_works()
+    probe[4] = f"lab_search: semantic deprecated (ONNX down, new stack pending) — lexical probe {'ok' if lex_ok else 'FAIL'}"
     df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
     pg = run("pg_isready -h 127.0.0.1 -p 5432", timeout=8)
     probe[5] = f"disk {df.stdout.strip() if df else '?'} | PostgreSQL {'up' if pg and 'accepting connections' in pg.stdout else 'DOWN'}"
@@ -945,18 +964,8 @@ def collect_metrics():
         m["ram_total_mb"] = int(p[1]) if len(p) >= 2 and str(p[1]).isdigit() else 0
     else:
         m["ram_used_mb"] = m["ram_total_mb"] = 0
-    ls = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py health",
-             timeout=45, cwd="/root/LabDoctorM/projects/lab-memory")
-    vec = "?"
-    if ls and ls.stdout:
-        try:
-            vec = json.loads(ls.stdout).get("vectors", "?")
-        except Exception:
-            vec = "?"
-    try:
-        m["vectors"] = int(vec)
-    except Exception:
-        m["vectors"] = 0
+    # Семантический стэк deprecated — векторов нет смысла. Лексическая живость поиска = 1/0.
+    m["vectors"] = 1 if _lexical_search_works() else 0
     dirty = 0
     for p in ["lab-memory", "mcp-tools", "api-hub", "DoctorM_and_Ai"]:
         d = os.path.join(PROJECTS, p)

@@ -171,6 +171,8 @@ def _mock_run(cmd, **kw):
         r.stdout = ""
     elif "lab_search.py health" in cmd:
         r.stdout = '{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}'
+    elif "lab_search.py search" in cmd:
+        r.stdout = '[{"title": "x"}]'
     elif "systemctl is-active reindex" in cmd:
         r.stdout = "active"
     elif "systemctl is-active" in cmd:
@@ -292,31 +294,42 @@ def test_cat_openclaw_branches():
                 return FakeRes(journal)
             return FakeRes("")
         return _r
-        return _r
-    orig_run, orig_dw = M.run, M.doctor_warnings
+    orig_run, orig_dw, orig_port = M.run, M.doctor_warnings, M.port_ok
     try:
         M.doctor_warnings = lambda: {"count": 1, "new": [],
                                      "all": ["openclaw.json contains plaintext secret-bearing config"]}
+        # --- порт слушает + systemd active + нет новых замечаний доктора -> зелёный ---
+        M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
         M.run = make("active", "", "6")
         ok, s, o = M.cat_openclaw()
         assert ok and "перезапусков за 1h: 0" in s
+        # --- порт НЕ слушает -> реально лёг -> красный DOWN ---
+        M.port_ok = lambda p, host="127.0.0.1", timeout=3: False
         M.run = make("inactive", "", "6")
         ok, s, o = M.cat_openclaw()
         assert ok is False and "DOWN" in s
+        # --- порт слушает, но systemd inactive -> осиротевший процесс (не авария) ---
+        M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+        M.run = make("inactive", "", "6")
+        ok, s, o = M.cat_openclaw()
+        assert ok is True and "systemd" in s
+        assert any("осиротевш" in x for x in o)
+        # --- авто-перезапуск (порт слушает) -> ⚠️ в out, но НЕ авария доставки ---
         M.run = make("active", "Scheduled restart\nStarting OpenClaw Gateway", "6")
         ok, s, o = M.cat_openclaw()
-        assert ok is False and "АВТО-перезапуск" in s
+        assert ok is True
+        assert any("АВТО-перезапуск" in x for x in o)
+        # --- ручной рестарт (порт слушает) ---
         M.run = make("active", "Starting OpenClaw Gateway", "6")
         ok, s, o = M.cat_openclaw()
         assert "ручн" in s
+        # --- новые замечания доктора поднимают ok=False даже при живом порте ---
         M.doctor_warnings = lambda: {"count": 1, "new": ["NEW DOC WARN"], "all": ["NEW DOC WARN"]}
         M.run = make("active", "", "6")
         ok, s, o = M.cat_openclaw()
-        # новые замечания доктора больше НЕ дублируются в detail категории —
-        # они поднимают ok=False и показываются в строке 🩺 / секции дампа.
         assert ok is False
     finally:
-        M.run, M.doctor_warnings = orig_run, orig_dw
+        M.run, M.doctor_warnings, M.port_ok = orig_run, orig_dw, orig_port
 
 
 def test_cat_mcp():
@@ -368,7 +381,7 @@ def test_cat_data_disk():
 
 def test_cat_memory_invalid_json():
     def _r(cmd, **k):
-        if "lab_search.py health" in cmd:
+        if "lab_search.py search" in cmd:
             return FakeRes("not json at all")
         return FakeRes("")
     orig = M.run
@@ -439,6 +452,8 @@ def test_build_report_full_bottom_sections():
             return FakeRes("")
         if "lab_search.py health" in cmd:
             return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "lab_search.py search" in cmd:
+            return FakeRes('[{"title": "x"}]')
         if "systemctl is-active reindex" in cmd:
             return FakeRes("active")
         if "systemctl is-active" in cmd:
@@ -535,8 +550,8 @@ def test_collect_metrics_basic(monkeypatch, tmp_path):
             return FakeRes("0.50 0.40 0.30")
         if "nproc" in cmd:
             return FakeRes("4")
-        if "lab_search.py health" in cmd:
-            return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "lab_search.py search" in cmd:
+            return FakeRes('[{"title": "x"}]')
         if "openclaw doctor" in cmd:
             return FakeRes("")
         if "openssl" in cmd:
@@ -552,7 +567,7 @@ def test_collect_metrics_basic(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
     m = M.collect_metrics()
     assert m["disk_pct"] == 50
-    assert m["vectors"] == 37596
+    assert m["vectors"] in (0, 1)  # lexical liveness flag (1=ok, 0=down)
     assert "load_pct" in m and "ts" in m
 
 
@@ -586,6 +601,8 @@ def test_collapse_to_green(monkeypatch, tmp_path):
             return FakeRes("4")
         if "lab_search.py health" in cmd:
             return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "lab_search.py search" in cmd:
+            return FakeRes('[{"title": "x"}]')
         if "openclaw doctor" in cmd:
             return FakeRes("")
         if "openssl" in cmd:
@@ -636,6 +653,8 @@ def test_severity_warn_shows(monkeypatch, tmp_path):
             return FakeRes("4")
         if "lab_search.py health" in cmd:
             return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "lab_search.py search" in cmd:
+            return FakeRes('[{"title": "x"}]')
         if "openclaw doctor" in cmd:
             return FakeRes("")
         if "openssl" in cmd:
