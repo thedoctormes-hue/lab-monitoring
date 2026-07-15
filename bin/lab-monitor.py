@@ -1206,9 +1206,11 @@ def build_report(full=False, daily=False):
     hist.append(cur)
     save_metrics_history(hist)
 
-    # --- Тир3: тихие часы — не беспокоим ЗавЛаба без 🔴 ---
-    if quiet_hours_active() and overall != "ТРЕВОГА":
-        return ""
+    # --- Тир3: тихие часы ОТКЛЮЧЕНЫ (ЗавЛаб 2026-07-16: «ОТЧЁТ КАЖДЫЙ ЧАС») ---
+    # Раньше: if quiet_hours_active() and overall != "ТРЕВОГА": return ""
+    # Теперь монитор отчитывается ежечасно вне зависимости от времени суток.
+    # if quiet_hours_active() and overall != "ТРЕВОГА":
+    #     return ""
 
     emoji = OVERALL_EMOJI[overall]
     header = f"🦊 ЛабМонитор · {stamp} МСК · {emoji} {overall} · {score}/{total}"

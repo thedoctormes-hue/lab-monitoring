@@ -725,7 +725,7 @@ def test_gateway_latency_in_output():
         M.run, M.port_ok = orig_run, orig_port
 
 
-def test_quiet_suppresses_when_ok(tmp_path):
+def test_reports_every_hour(tmp_path):
     orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
     orig_categories = M.CATEGORIES
     orig_now = M.NOW
@@ -736,14 +736,19 @@ def test_quiet_suppresses_when_ok(tmp_path):
     M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
     M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
     tz = datetime.timezone(datetime.timedelta(hours=3))
-    M.NOW = datetime.datetime(2026, 7, 13, 3, 0, tzinfo=tz)  # тихий час
+    M.NOW = datetime.datetime(2026, 7, 13, 3, 0, tzinfo=tz)  # «тихий час» по старому дизайну
     M.METRICS_HISTORY_FILE = str(tmp_path / "m.json")
     try:
         report = M.build_report(full=False)
-        assert report == ""  # тихие часы + OK -> подавлено
+        # ЗавЛаб 2026-07-16: «ОТЧЁТ КАЖДЫЙ ЧАС» — тихие часы отключены,
+        # отчёт формируется всегда, даже в 03:00 МСК при OK.
+        assert report != ""
+        assert "ЛабМонитор" in report
     finally:
         M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
         M.CATEGORIES = orig_categories
+        M.NOW = orig_now
+        M.METRICS_HISTORY_FILE = orig_hist
         M.NOW = orig_now
         M.METRICS_HISTORY_FILE = orig_hist
 
