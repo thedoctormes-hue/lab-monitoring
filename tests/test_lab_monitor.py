@@ -294,10 +294,11 @@ def test_cat_openclaw_branches():
                 return FakeRes(journal)
             return FakeRes("")
         return _r
-    orig_run, orig_dw, orig_port = M.run, M.doctor_warnings, M.port_ok
+    orig_run, orig_dw, orig_port, orig_scan = M.run, M.doctor_warnings, M.port_ok, M.scan_gateway_log_errors_1h
     try:
         M.doctor_warnings = lambda: {"count": 1, "new": [],
                                      "all": ["openclaw.json contains plaintext secret-bearing config"]}
+        M.scan_gateway_log_errors_1h = lambda: (0, [])  # детерминизм: не зависим от реального лога
         # --- порт слушает + systemd active + нет новых замечаний доктора -> зелёный ---
         M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
         M.run = make("active", "", "6")
@@ -328,8 +329,17 @@ def test_cat_openclaw_branches():
         M.run = make("active", "", "6")
         ok, s, o = M.cat_openclaw()
         assert ok is False
+        # --- новые ошибки гейтвея за 1ч подсвечиваются как warn (red line #34) ---
+        M.doctor_warnings = lambda: {"count": 1, "new": [],
+                                     "all": ["openclaw.json contains plaintext secret-bearing config"]}
+        M.run = make("active", "", "6")
+        M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+        M.scan_gateway_log_errors_1h = lambda: (3, ["🔍 ошибок в логе гейтвея за 1ч: 3 (истощение ключа исключено)", "    · tools.edit: 3"])
+        ok, s, o = M.cat_openclaw()
+        assert ok == "warn"
+        assert "ошибок гейтвея за 1ч" in s
     finally:
-        M.run, M.doctor_warnings, M.port_ok = orig_run, orig_dw, orig_port
+        M.run, M.doctor_warnings, M.port_ok, M.scan_gateway_log_errors_1h = orig_run, orig_dw, orig_port, orig_scan
 
 
 def test_cat_mcp():
@@ -618,12 +628,13 @@ def test_collapse_to_green(monkeypatch, tmp_path):
         if "journalctl" in cmd:
             return FakeRes("")
         return FakeRes("")
-    orig_run, orig_dw, orig_q, orig_port = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok
+    orig_run, orig_dw, orig_q, orig_port, orig_scan = M.run, M.doctor_warnings, M.get_random_quote, M.port_ok, M.scan_gateway_log_errors_1h
     orig_categories = M.CATEGORIES
     M.run = _mock_run
     M.doctor_warnings = lambda: {"count": 0, "new": [], "all": []}
     M.get_random_quote = lambda: "цитата"
     M.port_ok = lambda p, host="127.0.0.1", timeout=3: True
+    M.scan_gateway_log_errors_1h = lambda: (0, [])  # детерминизм: не зависим от реального лога
     M.CATEGORIES = [(c[0], c[1], (lambda: (True, "3/3 работают", ["mcp-memory (порт 8087): работает"])) if c[0] == 3 else c[2]) for c in orig_categories]
     monkeypatch.setattr(M, "QUIET_HOURS_END", 0)  # отключаем тихие часы в тесте
     monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
@@ -635,7 +646,7 @@ def test_collapse_to_green(monkeypatch, tmp_path):
         assert "💾" in short and "🧠" in short and "⚡" in short
         assert "ℹ️ полный дамп — !подробно" in short
     finally:
-        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok = orig_run, orig_dw, orig_q, orig_port
+        M.run, M.doctor_warnings, M.get_random_quote, M.port_ok, M.scan_gateway_log_errors_1h = orig_run, orig_dw, orig_q, orig_port, orig_scan
         M.CATEGORIES = orig_categories
 
 

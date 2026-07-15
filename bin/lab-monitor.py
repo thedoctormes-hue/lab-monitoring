@@ -171,9 +171,10 @@ def is_acked(cid, now_ts, ack_state=None):
 
 
 def symptom_frame(cid, status, summary):
-    """Тир4: при провале дописываем последствие (симптом), чтобы ЗавЛаб видел
-    не просто 'DOWN', а что именно сломается в его руках."""
-    if status is True:
+    """Тир4: при ПРОВАЛЕ (status False) дописываем последствие (симптом), чтобы
+    ЗавЛаб видел не просто 'DOWN', а что именно сломается в его руках.
+    Для warn/ок последствие НЕ показываем (это не остановка доставки)."""
+    if status is not False:
         return summary
     sym = SYMPTOM.get(cid)
     if not sym:
@@ -537,6 +538,12 @@ def cat_openclaw():
     # см. INC 2026-07-15; истощение ключа исключаем по red line #34).
     _gel_cnt, _gel_lines = scan_gateway_log_errors_1h()
     out.extend(_gel_lines)
+    if _gel_cnt and _gel_cnt > 0 and ok is True:
+        # Подсвечиваем категорию warn, чтобы ошибки гейтвея за 1ч были видны в
+        # отчёте (red line #34: окно 1ч, истощение ключа исключено). Ночью
+        # «тихие часы» скроют (по дизайну), днём — покажем в категориях.
+        ok = "warn"
+        detail = f"{_gel_cnt} ошибок гейтвея за 1ч (ключ-истощение исключено)"
     return ok, detail, out
 
 
