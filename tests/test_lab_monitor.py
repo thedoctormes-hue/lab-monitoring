@@ -513,7 +513,11 @@ def test_build_report_advice_gateway_down(tmp_path, monkeypatch):
         M.CATEGORIES = orig_cats
 
 
-def test_main_entrypoint():
+def test_main_entrypoint(monkeypatch):
+    # Тест детерминирован: отключаем «тихие часы» (00:00–08:00 МСК), иначе
+    # build_report() возвращает "" ночью и проверка заголовка падает (флак).
+    monkeypatch.setenv("QUIET_HOURS_START", "12")
+    monkeypatch.setenv("QUIET_HOURS_END", "12")
     import sys as _sys
     import io
     import contextlib
