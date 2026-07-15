@@ -17,6 +17,7 @@ lab-monitor.py — монитор лаборатории (Доминика)
 import datetime
 import json
 import os
+import glob
 import random
 import re
 import socket
@@ -416,6 +417,74 @@ def classify_restarts(journal_text, lifetime_nrest, window="1h"):
     }
 
 
+def _err_cat(m):
+    """Короткая читаемая категория ошибки для сводки монитора (поле \"0\"
+    для части событий содержит не подсистему, а само сообщение — не надёжно)."""
+    if m.startswith("[tools]"):
+        parts = m.split(" ", 2)
+        return f"tools.{parts[1]}" if len(parts) > 1 else "tools"
+    if m.startswith("lane task error"):
+        return "lane.task"
+    if m.startswith("gateway"):
+        return "gateway"
+    head = m.split(":", 1)[0]
+    return head[:40] or "other"
+
+
+def scan_gateway_log_errors_1h():
+    """Сканирует файл лога OpenClaw за последний 1 час и считает ERROR-события,
+    исключая истощение ключа (rate_limit/429/таймауты моделей) — см. red line #34.
+    journalctl для openclaw пуст (лог пишется в файл, не в journald), поэтому
+    монитор смотрит сюда, а не в journalctl. Возвращает (count|None, [строки])."""
+    KEY_EXHAUSTION_RE = re.compile(
+        r"rate_limit|429|FailoverError|candidate_failed|embedded_run_agent_end|"
+        r"embedded_run_failover|model_fallback|All models failed|Request was aborted|"
+        r"timeout|message processed|stopReason=stop", re.I)
+    try:
+        files = glob.glob("/tmp/openclaw/openclaw-*.log")
+        if not files:
+            return (0, ["(файл лога гейтвея не найден)"])
+        path = max(files, key=os.path.getmtime)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cutoff = now - datetime.timedelta(hours=1)
+        cnt = 0
+        cats = {}
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    o = json.loads(line)
+                except Exception:
+                    continue
+                meta = o.get("_meta") or {}
+                lvl = meta.get("logLevelName") or o.get("logLevelName")
+                if lvl != "ERROR":
+                    continue
+                t = meta.get("date") or o.get("time") or ""
+                s = t.replace("Z", "+00:00")
+                try:
+                    dt = datetime.datetime.fromisoformat(s)
+                except Exception:
+                    continue
+                if dt < cutoff:
+                    continue
+                m = o.get("message", "")
+                if KEY_EXHAUSTION_RE.search(m):
+                    continue
+                cnt += 1
+                cats[_err_cat(m)] = cats.get(_err_cat(m), 0) + 1
+        if cnt == 0:
+            return (0, ["🔍 ошибок в логе гейтвея за 1ч: 0 (истощение ключа исключено)"])
+        lines = [f"🔍 ошибок в логе гейтвея за 1ч: {cnt} (истощение ключа исключено)"]
+        for sub, c in sorted(cats.items(), key=lambda x: -x[1])[:6]:
+            lines.append(f"    · {sub}: {c}")
+        return (cnt, lines)
+    except Exception as e:
+        return (None, [f"ERROR scan_gateway_log: {e}"])
+
+
 def cat_openclaw():
     r = run("systemctl is-active openclaw-gateway.service", timeout=6)
     active = bool(r and r.stdout.strip() == "active")
@@ -464,6 +533,10 @@ def cat_openclaw():
                       f"(ты сам делал — ок, сверься с памятью)")
         else:
             detail = f"gateway работает (порт слушает) · перезапусков за {win}: 0"
+    # Сканируем файл лога гейтвея за последний 1 час (journalctl для openclaw пуст →
+    # см. INC 2026-07-15; истощение ключа исключаем по red line #34).
+    _gel_cnt, _gel_lines = scan_gateway_log_errors_1h()
+    out.extend(_gel_lines)
     return ok, detail, out
 
 
