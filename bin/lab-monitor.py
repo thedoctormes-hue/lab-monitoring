@@ -299,7 +299,7 @@ CAT_HINT = {
        "· авто-перезапуски (systemd сам поднял после падения) — 🔴 подозрительно, ищи root-cause\n"
        "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
-    4: "Память/поиск: единый рабочий сем-поиск = memory-gateway MCP (гибрид vector+lexical, RRF, OpenClaw-managed stdio). ONNX/FAISS/lab_search.py МЁРТВЫ (зона antcat) — НЕ использовать (канон ЗавЛаба 16.07). reindex ЗАКРЫТ ЗавЛабом 16.07 (не «пересоздадутся»). native memory_search — paused; mcp-memory :8087 удалён; Context API :8100 закрыт. 🧠 = memory-gateway search-health (1=ok/0=fail).",
+    4: "Память/поиск: рабочий сем-поиск = memory-gateway MCP (гибрид vector+lexical, RRF, OpenClaw-managed stdio).",
     5: "Базы и диск. disk — заполненность; норма <80%, тревога с 80%, крит 90%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
@@ -587,13 +587,10 @@ def cat_memory():
     # reindex ЗАКРЫТ ЗавЛабом 16.07 — не «пересоздадутся с новым стэком».
     mg_ok = _memory_gateway_ok()
     ok = mg_ok
-    detail = (f"memory-gateway MCP (semantic+lexical)={'РАБОТАЕТ' if mg_ok else 'FAIL'}; "
-              f"ONNX/FAISS/lab_search=МЁРТВ (зона antcat, НЕ использовать); reindex=ЗАКРЫТ(16.07)")
+    detail = (f"memory-gateway MCP (semantic+lexical)={'РАБОТАЕТ' if mg_ok else 'FAIL'}")
     out = [
         "memory-gateway MCP — единый рабочий сем-поиск (гибрид vector+lexical, RRF). ЖИВОЙ (29 workspaces, ~9.8k векторов).",
         f"lexical.db (лексич. слой memory-gateway): {'ок' if mg_ok else 'FAIL — проверь .ops/shared/anythingllm-sync/lexical.db'}",
-        "ONNX-embedder :8082 / FAISS / lab_search.py — МЁРТВЫ (зона antcat). Использовать ЗАПРЕЩЕНО (канон 16.07).",
-        "reindex-юниты ЗАКРЫТЫ ЗавЛабом 16.07 (не «призраки пересоздадутся»). reindex_timer/service — не алерт.",
     ]
     return ok, detail, out
 
