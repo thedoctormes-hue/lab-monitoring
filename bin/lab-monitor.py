@@ -582,7 +582,9 @@ def _read_control_log():
     """Сводка семпамяти (пишется синком): vc, container, incr_fails, rebuild_last, fails."""
     try:
         with open(CONTROL_LOG, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+            lines = [
+            line.strip() for line in f
+            if line.strip() and not line.startswith("#")]
         if not lines:
             return None
         d = {}
@@ -643,18 +645,21 @@ def _rebuild_last_failed():
     — тот не всегда обновляется после успешного rebuild и показывает стейл failed."""
     try:
         out = run(
-            "journalctl -u alm-sync-rebuild.service --since '-2d' --no-pager",
+            "journalctl -u alm-sync-rebuild.service "
+            "--since '-2d' --no-pager",
             timeout=12)
         if not out or not out.stdout:
             return False
         lines = out.stdout.splitlines()
-        starts = [i for i, l in enumerate(lines) if "Starting AnythingLLM full reindex" in l]
+        starts = [i for i, line in enumerate(lines) if "Starting AnythingLLM full reindex" in line]
         if not starts:
             return False
         tail = lines[starts[-1]:]
-        has_failed = any("Failed with result" in l for l in tail)
+        has_failed = any(
+            "Failed with result" in line for line in tail)
         has_finished = any(
-            "Finished AnythingLLM full reindex" in l for l in tail)
+            "Finished AnythingLLM full reindex" in line
+            for line in tail)
         return has_failed and not has_finished
     except Exception:
         return False

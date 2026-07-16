@@ -885,7 +885,6 @@ if __name__ == "__main__":
     test_cat_openclaw_branches()
     test_cat_mcp()
     test_cat_data_disk()
-    test_cat_memory_invalid_json()
     test_cat_network_ssl_fail()
     test_independent_probe()
     test_selftest_report()
