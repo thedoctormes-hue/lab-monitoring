@@ -637,6 +637,26 @@ def _unit_failed(unit):
         return False
 
 
+def _rebuild_last_failed():
+    """Последний полный rebuild (alm-sync-rebuild.service) упал?
+    Берём из journalctl (реальный последний запуск), а не из control_log.txt
+    — тот не всегда обновляется после успешного rebuild и показывает стейл failed."""
+    try:
+        out = run("journalctl -u alm-sync-rebuild.service --since '-2d' --no-pager", timeout=12)
+        if not out or not out.stdout:
+            return False
+        lines = out.stdout.splitlines()
+        starts = [i for i, l in enumerate(lines) if "Starting AnythingLLM full reindex" in l]
+        if not starts:
+            return False
+        tail = lines[starts[-1]:]
+        has_failed = any("Failed with result" in l for l in tail)
+        has_finished = any("Finished AnythingLLM full reindex" in l for l in tail)
+        return has_failed and not has_finished
+    except Exception:
+        return False
+
+
 def _real_vc():
     c = _read_control_log()
     try:
@@ -700,7 +720,7 @@ def cat_memory():
     ]
     if unit_failed:
         out.append("· alm-sync-incremental.service: failed (проверь journalctl)")
-    if ctrl and (ctrl.get("rebuild_last") == "failed"):
+    if _rebuild_last_failed():
         out.append("· последний полный reindex: failed (RUL-009: только Штрейкбрехер с разрешения ЗавЛаба)")
     return ok, detail, out
 
