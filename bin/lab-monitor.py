@@ -92,7 +92,7 @@ ACK_FILE = os.path.join(STATE_DIR, "ack.json")
 SERVICES_STATE_FILE = os.path.join(STATE_DIR, "services_state.json")
 CRASH_LOOP_DELTA = 3  # рост NRestarts между прогонами >= этого → активная петля
 NRESTARTS_LIFETIME_WARN = 20  # накопленный (lifetime) NRestarts >= этого → хронический рестарт (виден без активной петли за час)
-MONITOR_PORTS = [5432, 18789, 8086, 8888]  # критичные порты (PostgreSQL/gateway/MCP). 8087/mcp-memory убран: сервис похоронен (ADR-0054, semantic на новом стэке)
+MONITOR_PORTS = [5432, 18789, 8086, 8888]  # критичные порты (PostgreSQL/gateway/MCP). mcp-memory :8087 убран (ADR-0054); реальный сем-поиск = memory-gateway MCP (канон ЗавЛаба 16.07), ONNX/FAISS/lab_search мертвы (зона antcat)
 
 # === Тир 4 (DDP 2026-07-13): симптомный фрейминг + латентность gateway ===
 # Вместо сухого «X DOWN» — показываем последствие (что сломается у ЗавЛаба).
@@ -259,13 +259,9 @@ ADVICE = {
                     else "gateway ок — действий нет")),
     3: lambda ok, s, d: "упавшие MCP: проверь systemctl status mcp-* и порты; при необходимости restart"
         if not ok else "MCP ок — действий нет",
-    4: lambda ok, s, d: ("лексический поиск FAIL → проверь lab_search.py search; семантика deprecated (ONNX down, новый стэк в работе)"
-        if "lexical=FAIL" in d
-        else ("reindex-призрак FAILED — стэк меняется, не перезапускай; дождись нового реиндекса"
-              if "reindex_service=failed" in d
-              else ("reindex-таймер active (призрак) — стэк меняется, не запускай второй раз"
-                    if "reindex_timer=active" in d
-                    else "память/поиск: семантика на новом стэке, лексика работает — действий нет"))),
+    4: lambda ok, s, d: ("memory-gateway MCP FAIL → проверь lexical.db (.ops/shared/anythingllm-sync/lexical.db) и запуск mcp-tools/memory-gateway/run.py; ONNX/FAISS/lab_search мертвы (зона antcat) — НЕ использовать"
+        if "FAIL" in d
+        else "память/поиск: memory-gateway MCP работает (semantic+lexical, RRF) — действий нет"),
     5: lambda ok, s, d: ("PostgreSQL DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
         if "pg" in d.lower() and "down" in d.lower()
         else ("disk высокий → du -sh /var /tmp /root 2>/dev/null; найди и очисти (trash > rm), но сначала фактчек"
@@ -303,7 +299,7 @@ CAT_HINT = {
        "· авто-перезапуски (systemd сам поднял после падения) — 🔴 подозрительно, ищи root-cause\n"
        "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
-    4: "Память/поиск: семантический стэк (ONNX+FAISS) deprecated — переезд на новый стэк. Сейчас работает лексический поиск (lab_search), семантика OFF. vectors-метрика deprecated (показывает лексическую живость 1/0). reindex-юниты — призраки, будут пересозданы с новым стэком.",
+    4: "Память/поиск: единый рабочий сем-поиск = memory-gateway MCP (гибрид vector+lexical, RRF, OpenClaw-managed stdio). ONNX/FAISS/lab_search.py МЁРТВЫ (зона antcat) — НЕ использовать (канон ЗавЛаба 16.07). reindex ЗАКРЫТ ЗавЛабом 16.07 (не «пересоздадутся»). native memory_search — paused; mcp-memory :8087 удалён; Context API :8100 закрыт. 🧠 = memory-gateway search-health (1=ok/0=fail).",
     5: "Базы и диск. disk — заполненность; норма <80%, тревога с 80%, крит 90%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
@@ -574,42 +570,31 @@ def cat_mcp():
     return (up == total), f"{up}/{total} работают", out
 
 
-def _lexical_search_works():
-    """Real lexical liveness probe: run a search query, expect JSON list (even empty)."""
-    try:
-        r = run("python3 /root/LabDoctorM/projects/lab-memory/scripts/lab_search.py search \"OpenClaw\" --topN 1 --json",
-                timeout=30, cwd="/root/LabDoctorM/projects/lab-memory")
-        if not r or not r.stdout:
-            return False
-        data = json.loads(r.stdout)
-        return isinstance(data, list)
-    except Exception:
-        return False
+def _memory_gateway_ok():
+    """КАНОН (ЗавЛаб 16.07): реальный сем-поиск = memory-gateway MCP (stdio, OpenClaw-managed).
+    Проверяем живость рабочего стэка: лексический слой (lexical.db) + запускаемость сервера."""
+    LEX_DB = "/root/LabDoctorM/.ops/shared/anythingllm-sync/lexical.db"
+    lex_ok = os.path.isfile(LEX_DB) and os.path.getsize(LEX_DB) > 0
+    # сервер импортируется? (OpenClaw спавнит его по требованию)
+    srv_ok = os.path.isfile("/root/LabDoctorM/projects/mcp-tools/memory-gateway/run.py")
+    return lex_ok and srv_ok
 
 
 def cat_memory():
-    # === Семантический стэк (ONNX+FAISS) ДЕПРЕКЕЙТНУТ (ЗавЛаб, 2026-07-15):
-    # семантика переезжает на другой стэк. ONNX-embedder намеренно остановлен (14.07),
-    # юнит стёрт, :8082 не слушает — это ОЖИДАЕМО, не авария.
-    # Единственный реальный сигнал здоровья памяти = лексический поиск lab_search отвечает.
-    ri = run("systemctl is-active reindex-incremental.timer reindex-full.timer", timeout=6)
-    ri_active = bool(ri and "active" in ri.stdout)
-    ri_fail = run("systemctl is-failed reindex-incremental.service", timeout=6)
-    ri_failed = bool(ri_fail and "failed" in ri_fail.stdout)
-    # Лексический поиск жив? — реальный запрос к lab_search (sem неважен, lex должен отвечать).
-    lex_ok = _lexical_search_works()
-    onnx_port = port_ok(8082)
-    onnx_embedder_ok = onnx_port  # грубый прокси: порт жив = эмбеддер потенциально жив
-    # Алерт НЕ красный из-за ONNX: стэк меняется. Реальный сбой только если лексический поиск мертв.
-    ok = lex_ok
-    semantic_state = "OK" if onnx_embedder_ok else "OFF (deprecated — стэк меняется)"
-    detail = (f"поиск lexical={'ok' if lex_ok else 'FAIL'}; "
-              f"semantic(ONNX)={semantic_state}; "
-              f"reindex_timer={'active' if ri_active else 'off'}; reindex_service={'failed' if ri_failed else 'ok'}")
-    out = [f"reindex-incremental.timer: {'active' if ri_active else 'off'} (призрак — стэк меняется)",
-           f"reindex-incremental.service: {'failed' if ri_failed else 'active'} (призрак — стэк меняется)"]
-    if not onnx_embedder_ok:
-        out.append("⚠️ ONNX-embedder deprecated: юнит стёрт, :8082 не слушает — ожидается замена стэка; не авария")
+    # === КАНОН (ЗавЛаб, 2026-07-16): единый рабочий сем-поиск = memory-gateway MCP ===
+    # (гибрид vector+lexical, RRF; OpenClaw-managed stdio). ONNX/FAISS/lab_search.py —
+    # МЁРТВЫ (зона antcat), использовать ЗАПРЕЩЕНО (memory-gateway__search_memory — единственный путь).
+    # reindex ЗАКРЫТ ЗавЛабом 16.07 — не «пересоздадутся с новым стэком».
+    mg_ok = _memory_gateway_ok()
+    ok = mg_ok
+    detail = (f"memory-gateway MCP (semantic+lexical)={'РАБОТАЕТ' if mg_ok else 'FAIL'}; "
+              f"ONNX/FAISS/lab_search=МЁРТВ (зона antcat, НЕ использовать); reindex=ЗАКРЫТ(16.07)")
+    out = [
+        "memory-gateway MCP — единый рабочий сем-поиск (гибрид vector+lexical, RRF). ЖИВОЙ (29 workspaces, ~9.8k векторов).",
+        f"lexical.db (лексич. слой memory-gateway): {'ок' if mg_ok else 'FAIL — проверь .ops/shared/anythingllm-sync/lexical.db'}",
+        "ONNX-embedder :8082 / FAISS / lab_search.py — МЁРТВЫ (зона antcat). Использовать ЗАПРЕЩЕНО (канон 16.07).",
+        "reindex-юниты ЗАКРЫТЫ ЗавЛабом 16.07 (не «призраки пересоздадутся»). reindex_timer/service — не алерт.",
+    ]
     return ok, detail, out
 
 
@@ -945,10 +930,10 @@ def independent_probe():
     kp = {"mcp-apikeys": 8086, "mcp-gatekeeper": 8888}
     up = sum(1 for s in svcs if (port_ok(kp[s]) if s in kp else True))
     probe[3] = f"mcp запущено/порты отвечают: {up}/{len(svcs)}"
-    # Семантический стэк deprecated — ONNX health сломан, векторов нет смысла.
-    # Проверяем лексическую живость поиска вместо мёртвого health-эндпоинта.
-    lex_ok = _lexical_search_works()
-    probe[4] = f"lab_search: semantic deprecated (ONNX down, new stack pending) — lexical probe {'ok' if lex_ok else 'FAIL'}"
+    # КАНОН (ЗавЛаб 16.07): реальный сем-поиск = memory-gateway MCP (stdio).
+    # ONNX/FAISS/lab_search мертвы — не зондим как «переезд».
+    mg_ok = _memory_gateway_ok()
+    probe[4] = f"memory-gateway MCP (semantic+lexical): {'ok' if mg_ok else 'FAIL'} (канон 16.07; ONNX/lab_search мертвы, reindex закрыт)"
     df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
     pg = run("pg_isready -h 127.0.0.1 -p 5432", timeout=8)
     probe[5] = f"disk {df.stdout.strip() if df else '?'} | PostgreSQL {'up' if pg and 'accepting connections' in pg.stdout else 'DOWN'}"
@@ -1045,7 +1030,7 @@ def collect_metrics():
     else:
         m["ram_used_mb"] = m["ram_total_mb"] = 0
     # Семантический стэк deprecated — векторов нет смысла. Лексическая живость поиска = 1/0.
-    m["vectors"] = 1 if _lexical_search_works() else 0
+    m["vectors"] = 1 if _memory_gateway_ok() else 0
     dirty = 0
     for p in ["lab-memory", "mcp-tools", "api-hub", "DoctorM_and_Ai"]:
         d = os.path.join(PROJECTS, p)
