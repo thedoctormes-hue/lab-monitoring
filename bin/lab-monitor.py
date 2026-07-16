@@ -582,9 +582,9 @@ def _memory_gateway_ok():
 
 def cat_memory():
     # === КАНОН (ЗавЛаб, 2026-07-16): единый рабочий сем-поиск = memory-gateway MCP ===
-    # (гибрид vector+lexical, RRF; OpenClaw-managed stdio). ONNX/FAISS/lab_search.py —
-    # МЁРТВЫ (зона antcat), использовать ЗАПРЕЩЕНО (memory-gateway__search_memory — единственный путь).
-    # reindex ЗАКРЫТ ЗавЛабом 16.07 — не «пересоздадутся с новым стэком».
+    # (гибрид vector+lexical, RRF; OpenClaw-managed stdio). Legacy-пути
+    # (lab_search.py, ONNX :8082, mcp-memory :8087, Context :8100) — не использовать.
+    # reindex ручной — только antcat/ЗавЛаб (RUL-009); авто-sync не трогать.
     mg_ok = _memory_gateway_ok()
     ok = mg_ok
     detail = (f"memory-gateway MCP (semantic+lexical)={'РАБОТАЕТ' if mg_ok else 'FAIL'}")
