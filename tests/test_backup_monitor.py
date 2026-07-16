@@ -2,17 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch
 
-import pytest
 
 from lab_monitoring.backup_monitor import (
     check_pg_backups, BackupCheckResult, BackupInfo,
-    _find_backup_dirs, _scan_backups, BACKUP_DIRS,
+    _find_backup_dirs, _scan_backups,
 )
 
 
