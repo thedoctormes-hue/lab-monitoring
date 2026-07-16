@@ -799,7 +799,7 @@ def cat_projects():
     # инциденты: всего / закрыто / открыто (честный подсчёт, не всё = «открытое»)
     inc_total, inc_closed = 0, 0
     open_incidents = []
-    closed_re = re.compile(r"status:\s*(resolved|closed|done)", re.IGNORECASE)
+    closed_re = re.compile(r"status:\s*(resolved|closed|done|retired)", re.IGNORECASE)
     now = datetime.datetime.now().timestamp()
     for root in [WORKSPACES, PROJECTS]:
         for _ in os.listdir(root) if os.path.isdir(root) else []:
@@ -808,6 +808,8 @@ def cat_projects():
                 continue
             for f in os.listdir(idir):
                 if not f.endswith(".md"):
+                    continue
+                if f.lower().startswith("readme") or "template" in f.lower():
                     continue
                 inc_total += 1
                 fpath = os.path.join(idir, f)
@@ -1080,7 +1082,7 @@ def independent_probe():
     ssl = run("echo | timeout 8 openssl s_client -servername shtab-ai.ru -connect shtab-ai.ru:443 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null", timeout=12)
     probe[6] = f"VPN {'Up' if vpn and 'Up' in vpn.stdout else 'DOWN'} | searxng {'ok' if sx else 'DOWN'} | SSL {'ok' if ssl and ssl.stdout.strip() else 'FAIL'}"
     inc_total, inc_closed = 0, 0
-    cre = re.compile(r"status:\s*(resolved|closed|done)", re.IGNORECASE)
+    cre = re.compile(r"status:\s*(resolved|closed|done|retired)", re.IGNORECASE)
     for root in [WORKSPACES, PROJECTS]:
         if not os.path.isdir(root):
             continue
@@ -1090,6 +1092,8 @@ def independent_probe():
                 continue
             for f in os.listdir(idir):
                 if not f.endswith(".md"):
+                    continue
+                if f.lower().startswith("readme") or "template" in f.lower():
                     continue
                 inc_total += 1
                 try:
@@ -1179,7 +1183,7 @@ def collect_metrics():
         dirty += n
     m["git_dirty"] = dirty
     inc_total, inc_closed = 0, 0
-    cre = re.compile(r"status:\s*(resolved|closed|done)", re.IGNORECASE)
+    cre = re.compile(r"status:\s*(resolved|closed|done|retired)", re.IGNORECASE)
     for root in [WORKSPACES, PROJECTS]:
         if not os.path.isdir(root):
             continue
@@ -1189,6 +1193,8 @@ def collect_metrics():
                 continue
             for f in os.listdir(idir):
                 if not f.endswith(".md"):
+                    continue
+                if f.lower().startswith("readme") or "template" in f.lower():
                     continue
                 inc_total += 1
                 try:
