@@ -58,7 +58,7 @@ THRESHOLDS = {
 # Чтобы два монитора (src и этот) не расходились по числам (DDP 2026-07-13).
 # Если пакет недоступен — остаёмся на локальных порогах (fallback).
 try:
-    from lab_monitoring.thresholds import AlertConfig as _AlertConfig
+    from lab_monitoring.thresholds import AlertConfig as _AlertConfig  # type: ignore[import-untyped]
     _cfg = _AlertConfig()
     THRESHOLDS["disk_warn_pct"] = int(_cfg.disk_warn_pct)
     THRESHOLDS["disk_crit_pct"] = int(_cfg.disk_critical_pct)
@@ -642,7 +642,9 @@ def _rebuild_last_failed():
     Берём из journalctl (реальный последний запуск), а не из control_log.txt
     — тот не всегда обновляется после успешного rebuild и показывает стейл failed."""
     try:
-        out = run("journalctl -u alm-sync-rebuild.service --since '-2d' --no-pager", timeout=12)
+        out = run(
+            "journalctl -u alm-sync-rebuild.service --since '-2d' --no-pager",
+            timeout=12)
         if not out or not out.stdout:
             return False
         lines = out.stdout.splitlines()
@@ -651,7 +653,8 @@ def _rebuild_last_failed():
             return False
         tail = lines[starts[-1]:]
         has_failed = any("Failed with result" in l for l in tail)
-        has_finished = any("Finished AnythingLLM full reindex" in l for l in tail)
+        has_finished = any(
+            "Finished AnythingLLM full reindex" in l for l in tail)
         return has_failed and not has_finished
     except Exception:
         return False
@@ -721,7 +724,9 @@ def cat_memory():
     if unit_failed:
         out.append("· alm-sync-incremental.service: failed (проверь journalctl)")
     if _rebuild_last_failed():
-        out.append("· последний полный reindex: failed (RUL-009: только Штрейкбрехер с разрешения ЗавЛаба)")
+        out.append(
+            "· последний полный reindex: failed "
+            "(RUL-009: только Штрейкбрехер с разрешения ЗавЛаба)")
     return ok, detail, out
 
 

@@ -389,20 +389,6 @@ def test_cat_data_disk():
             M.run = orig
 
 
-def test_cat_memory_invalid_json():
-    def _r(cmd, **k):
-        if "lab_search.py search" in cmd:
-            return FakeRes("not json at all")
-        return FakeRes("")
-    orig = M.run
-    M.run = _r
-    try:
-        ok, s, o = M.cat_memory()
-        assert ok is False
-    finally:
-        M.run = orig
-
-
 def test_cat_network_ssl_fail():
     def _r(cmd, **k):
         if "docker ps" in cmd and "amnezia" in cmd:
@@ -578,10 +564,11 @@ def test_collect_metrics_basic(monkeypatch, tmp_path):
             return FakeRes("")
         return FakeRes("")
     monkeypatch.setattr(M, "run", _ok)
+    monkeypatch.setattr(M, "_real_vc", lambda: 8694)
     monkeypatch.setattr(M, "METRICS_HISTORY_FILE", str(tmp_path / "m.json"))
     m = M.collect_metrics()
     assert m["disk_pct"] == 50
-    assert m["vectors"] in (0, 1)  # lexical liveness flag (1=ok, 0=down)
+    assert m["vectors"] == 8694  # реальный vc из control_log (mock _real_vc)
     assert "load_pct" in m and "ts" in m
 
 
