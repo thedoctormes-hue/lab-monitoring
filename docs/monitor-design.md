@@ -17,7 +17,7 @@ _Статус: v1.0 (черновик зафиксирован 2026-07-12). Ав
 1. **Агенты колонии (8):** жив/активность/сессия/ошибки; grimoire.md жив; его кроны (вкл/выкл, статус, consecutive errors)
 2. **Платформа OpenClaw:** gateway active / NRestarts / версия; телеграм-боты (8) шлют ли, не забанены ли; раз в сутки `openclaw doctor` + бэкап при valid
 3. **MCP-сервисы:** mcp-heartbeat(:8088) / mcp-memory(:8087) / mcp-apikeys(:8086) active + порт; выключенные (filesystem/lab-research/shell/status) — флаг, если вдруг active без спроса
-4. **Память и поиск:** memory-gateway MCP (гибрид vector+lexical, RRF, OpenClaw-managed stdio); ONNX/FAISS/lab_search мертвы (зона antcat); reindex закрыт ЗавЛабом 16.07
+4. **Память и поиск:** memory-gateway MCP (гибрид vector+lexical, RRF, OpenClaw-managed stdio); ONNX/FAISS/lab_search мертвы (неактуальны); ручной reindex — только Штрейкбрехер с разрешения ЗавЛаба (RUL-009)
 5. **Данные и хранилища:** PostgreSQL(api-hub-db) up/размер/бэкап; SQLite state не заблокирована; диск корень <85%, /tmp, логи, бэкапы
 6. **Сеть и внешний доступ:** VPN(amnezia-awg2) up; searxng отвечает; внешние API(tavily/firecrawl/…) live_status; SSL-сертификаты до expiry < N дней
 7. **Проекты и код:** git-статус ключевых проектов; открытые INC-*; CVE/dependency

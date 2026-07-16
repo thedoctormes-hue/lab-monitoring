@@ -299,7 +299,7 @@ CAT_HINT = {
        "· авто-перезапуски (systemd сам поднял после падения) — 🔴 подозрительно, ищи root-cause\n"
        "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
-    4: "Память/поиск: сервер memory-gateway (контейнер Up + векторы) + инкрементальный синк каждые 5 мин; ошибки в failed_sync_report.json / sync.log; полный reindex — only antcat/ЗавЛаб (RUL-009).",
+    4: "Память/поиск: сервер memory-gateway (контейнер Up + векторы) + инкрементальный синк каждые 5 мин; ошибки в failed_sync_report.json / sync.log; полный reindex — only Штрейкбрехер с разрешения ЗавЛаба (RUL-009).",
     5: "Базы и диск. disk — заполненность; норма <80%, тревога с 80%, крит 90%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
@@ -657,7 +657,7 @@ def cat_memory():
     # === КАНОН (ЗавЛаб, 2026-07-16): единый рабочий сем-поиск = memory-gateway MCP ===
     # (гибрид vector+lexical, RRF; OpenClaw-managed stdio). Legacy-пути
     # (lab_search.py, ONNX :8082, mcp-memory :8087, Context :8100) — не использовать.
-    # reindex ручной — только antcat/ЗавЛаб (RUL-009); авто-sync не трогать.
+    # reindex ручной — только Штрейкбрехер с разрешения ЗавЛаба (RUL-009); авто-sync не трогать.
     mg_ok = _memory_gateway_ok()           # прокси: lexical.db непуст + run.py на месте
     ctrl = _read_control_log()             # vc, container, incr_fails, rebuild_last, fails
     incr, incr_err, full, ws = _count_sync_last_hour()
@@ -701,7 +701,7 @@ def cat_memory():
     if unit_failed:
         out.append("· alm-sync-incremental.service: failed (проверь journalctl)")
     if ctrl and (ctrl.get("rebuild_last") == "failed"):
-        out.append("· последний полный reindex: failed (RUL-009: только antcat/ЗавЛаб)")
+        out.append("· последний полный reindex: failed (RUL-009: только Штрейкбрехер с разрешения ЗавЛаба)")
     return ok, detail, out
 
 
