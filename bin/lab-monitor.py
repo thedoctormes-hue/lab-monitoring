@@ -259,9 +259,9 @@ ADVICE = {
                     else "gateway ок — действий нет")),
     3: lambda ok, s, d: "упавшие MCP: проверь systemctl status mcp-* и порты; при необходимости restart"
         if not ok else "MCP ок — действий нет",
-    4: lambda ok, s, d: ("memory-gateway MCP FAIL → проверь lexical.db (.ops/shared/anythingllm-sync/lexical.db) и запуск mcp-tools/memory-gateway/run.py; ONNX/FAISS/lab_search мертвы (зона antcat) — НЕ использовать"
-        if "FAIL" in d
-        else "память/поиск: memory-gateway MCP работает (semantic+lexical, RRF) — действий нет"),
+    4: lambda ok, s, d: ("memory-gateway СБОЙ → проверь: контейнер anythingllm (docker ps), sync.log, alm-sync-incremental.service (journalctl), failed_sync_report.json"
+        if "СБОЙ" in d
+        else "память/поиск: memory-gateway MCP + синк работают — действий нет"),
     5: lambda ok, s, d: ("PostgreSQL DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
         if "pg" in d.lower() and "down" in d.lower()
         else ("disk высокий → du -sh /var /tmp /root 2>/dev/null; найди и очисти (trash > rm), но сначала фактчек"
@@ -299,7 +299,7 @@ CAT_HINT = {
        "· авто-перезапуски (systemd сам поднял после падения) — 🔴 подозрительно, ищи root-cause\n"
        "· lifetime NRestarts — справочно, тревогу НЕ управляет (иначе горел бы вечно)",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
-    4: "Память/поиск: рабочий сем-поиск = memory-gateway MCP (гибрид vector+lexical, RRF, OpenClaw-managed stdio).",
+    4: "Память/поиск: сервер memory-gateway (контейнер Up + векторы) + инкрементальный синк каждые 5 мин; ошибки в failed_sync_report.json / sync.log; полный reindex — only antcat/ЗавЛаб (RUL-009).",
     5: "Базы и диск. disk — заполненность; норма <80%, тревога с 80%, крит 90%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
@@ -570,13 +570,86 @@ def cat_mcp():
     return (up == total), f"{up}/{total} работают", out
 
 
+SYNC_DIR = "/root/LabDoctorM/.ops/shared/anythingllm-sync"
+CONTROL_LOG = os.path.join(SYNC_DIR, "control_log.txt")
+SYNC_LOG = os.path.join(SYNC_DIR, "sync.log")
+FAILED_REPORT = os.path.join(SYNC_DIR, "failed_sync_report.json")
+LEX_DB = "/root/LabDoctorM/.ops/shared/anythingllm-sync/lexical.db"
+MG_RUN = "/root/LabDoctorM/projects/mcp-tools/memory-gateway/run.py"
+
+
+def _read_control_log():
+    """Сводка семпамяти (пишется синком): vc, container, incr_fails, rebuild_last, fails."""
+    try:
+        with open(CONTROL_LOG, encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+        if not lines:
+            return None
+        d = {}
+        for tok in lines[-1].split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                d[k] = v
+        return d
+    except OSError:
+        return None
+
+
+def _count_sync_last_hour():
+    """За последний 1ч: (incr_dones, incr_errors, full_rebuilds, workspaces)."""
+    cutoff = time.time() - 3600
+    incr = 0
+    incr_err = 0
+    ws = 0
+    try:
+        with open(SYNC_LOG, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.match(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\].*DONE uploaded=\d+ failed=(\d+)", line)
+                if m:
+                    try:
+                        ts = datetime.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+                    except ValueError:
+                        continue
+                    if ts >= cutoff:
+                        incr += 1
+                        incr_err += int(m.group(2))
+                cm = re.search(r"candidates: \d+ files across (\d+) workspaces", line)
+                if cm:
+                    ws = int(cm.group(1))
+    except OSError:
+        pass
+    full = 0
+    try:
+        out = run("journalctl -u alm-sync-rebuild.service --since '1h ago' --no-pager", timeout=10)
+        if out and out.stdout:
+            full = out.stdout.count("alm-sync-rebuild.service: Starting")
+    except Exception:
+        full = 0
+    return incr, incr_err, full, ws
+
+
+def _unit_failed(unit):
+    """True если юнит в состоянии failed (чтение статуса, не управление)."""
+    try:
+        r = run(f"systemctl is-failed {unit}", timeout=8)
+        return bool(r and r.stdout and "failed" in r.stdout)
+    except Exception:
+        return False
+
+
+def _real_vc():
+    c = _read_control_log()
+    try:
+        return int((c or {}).get("vc", "0"))
+    except (ValueError, TypeError):
+        return 0
+
+
 def _memory_gateway_ok():
     """КАНОН (ЗавЛаб 16.07): реальный сем-поиск = memory-gateway MCP (stdio, OpenClaw-managed).
     Проверяем живость рабочего стэка: лексический слой (lexical.db) + запускаемость сервера."""
-    LEX_DB = "/root/LabDoctorM/.ops/shared/anythingllm-sync/lexical.db"
     lex_ok = os.path.isfile(LEX_DB) and os.path.getsize(LEX_DB) > 0
-    # сервер импортируется? (OpenClaw спавнит его по требованию)
-    srv_ok = os.path.isfile("/root/LabDoctorM/projects/mcp-tools/memory-gateway/run.py")
+    srv_ok = os.path.isfile(MG_RUN)
     return lex_ok and srv_ok
 
 
@@ -585,14 +658,52 @@ def cat_memory():
     # (гибрид vector+lexical, RRF; OpenClaw-managed stdio). Legacy-пути
     # (lab_search.py, ONNX :8082, mcp-memory :8087, Context :8100) — не использовать.
     # reindex ручной — только antcat/ЗавЛаб (RUL-009); авто-sync не трогать.
-    mg_ok = _memory_gateway_ok()
-    ok = mg_ok
-    detail = (f"memory-gateway MCP (semantic+lexical)={'РАБОТАЕТ' if mg_ok else 'FAIL'}")
+    mg_ok = _memory_gateway_ok()           # прокси: lexical.db непуст + run.py на месте
+    ctrl = _read_control_log()             # vc, container, incr_fails, rebuild_last, fails
+    incr, incr_err, full, ws = _count_sync_last_hour()
+    unit_failed = _unit_failed("alm-sync-incremental.service")
+
+    # сервер жив: контейнер Up + векторы есть + lexical.db непуст
+    container = (ctrl or {}).get("container", "?")
+    try:
+        vc = int((ctrl or {}).get("vc", "0"))
+    except ValueError:
+        vc = 0
+    server_up = container == "Up" and vc > 0 and mg_ok
+
+    # ошибки: failed из sync.log + incr_fails из control_log
+    try:
+        ctrl_incr_fails = int((ctrl or {}).get("incr_fails", "0"))
+    except ValueError:
+        ctrl_incr_fails = 0
+    total_errs = incr_err + ctrl_incr_fails
+
+    ok = server_up and not unit_failed
+
+    # свежесть lexical.db
+    lex_mtime = 0
+    try:
+        lex_mtime = os.path.getmtime(LEX_DB)
+    except OSError:
+        lex_mtime = 0
+    lex_fresh = (time.time() - lex_mtime) < 3600
+    try:
+        lex_size_mb = os.path.getsize(LEX_DB) / (1024 * 1024)
+    except OSError:
+        lex_size_mb = 0
+
+    detail = f"memory-gateway MCP {'OK' if ok else 'СБОЙ'}"
     out = [
-        "memory-gateway MCP — единый рабочий сем-поиск (гибрид vector+lexical, RRF). ЖИВОЙ (29 workspaces, ~9.8k векторов).",
-        f"lexical.db (лексич. слой memory-gateway): {'ок' if mg_ok else 'FAIL — проверь .ops/shared/anythingllm-sync/lexical.db'}",
+        f"· сервер: {'Up' if server_up else 'DOWN'} (контейнер {container}, {vc} векторов, {ws} workspaces)",
+        f"· синк за 1ч: инкрементальных {incr} · полных {full} · ошибок {total_errs}",
+        f"· lexical.db: {'ок' if mg_ok else 'FAIL'} ({lex_size_mb:.0f} MB, {'свежий' if lex_fresh else 'старше 1ч'})",
     ]
+    if unit_failed:
+        out.append("· alm-sync-incremental.service: failed (проверь journalctl)")
+    if ctrl and (ctrl.get("rebuild_last") == "failed"):
+        out.append("· последний полный reindex: failed (RUL-009: только antcat/ЗавЛаб)")
     return ok, detail, out
+
 
 
 def cat_data():
@@ -1027,7 +1138,7 @@ def collect_metrics():
     else:
         m["ram_used_mb"] = m["ram_total_mb"] = 0
     # Семантический стэк deprecated — векторов нет смысла. Лексическая живость поиска = 1/0.
-    m["vectors"] = 1 if _memory_gateway_ok() else 0
+    m["vectors"] = _real_vc() or (1 if _memory_gateway_ok() else 0)
     dirty = 0
     for p in ["lab-memory", "mcp-tools", "api-hub", "DoctorM_and_Ai"]:
         d = os.path.join(PROJECTS, p)
@@ -1227,6 +1338,12 @@ def build_report(full=False, daily=False):
     # --- COLLAPSE-TO-GREEN: когда всё OK — минимум строк (борьба с alert fatigue) ---
     if overall == "OK" and not full and not sf:
         cl = [header, signals_line]
+        # [4] Память/поиск: всегда показываем с деталями синка (ЗавЛаб 16.07)
+        for cid, name, status, summary, details in results:
+            if cid == 4:
+                cl.append(f"{ICON[status]} {name}: {symptom_frame(cid, status, summary)}")
+                for d in details:
+                    cl.append(f"  {d}")
         events = build_hourly_events(cur, prev_run)
         if events:
             cl.append("⚡ События за час:")
@@ -1241,6 +1358,9 @@ def build_report(full=False, daily=False):
     lines = [header, signals_line]
     for cid, name, status, summary, details in results:
         lines.append(f"{ICON[status]} {name}: {symptom_frame(cid, status, summary)}")
+        if details and (cid == 4 or not status):
+            for d in details:
+                lines.append(f"  {d}")
 
     if sf:
         lines.append("🔴 САМОПРОВЕРКА (монитор поймал сам себя):")
