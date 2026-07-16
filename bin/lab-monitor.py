@@ -1380,6 +1380,8 @@ def build_report(full=False, daily=False):
                 cl.append(f"{ICON[status]} {name}: {symptom_frame(cid, status, summary)}")
                 for d in details:
                     cl.append(f"  {d}")
+        # инциденты: открытые ВСЕГДА видны, даже при COLLAPSE-TO-GREEN (ЗавЛаб #11912, 16.07)
+        cl.append(f"инциденты: {cur.get('open_incidents', '?')} открыто")
         events = build_hourly_events(cur, prev_run)
         if events:
             cl.append("⚡ События за час:")
