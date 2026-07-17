@@ -639,6 +639,15 @@ def _unit_failed(unit):
         return False
 
 
+def _unit_active(unit):
+    """True если юнит сейчас active (живой is-active, не парсинг логов)."""
+    try:
+        r = run(f"systemctl is-active {unit}", timeout=8)
+        return bool(r and r.stdout and r.stdout.strip() == "active")
+    except Exception:
+        return False
+
+
 def _rebuild_last_failed():
     """Последний полный rebuild (alm-sync-rebuild.service) упал?
     Берём из journalctl (реальный последний запуск), а не из control_log.txt
@@ -1291,7 +1300,14 @@ def build_hourly_events(cur, prev):
             lines.append(f"  • ▲ {d}")
     for d in psd:
         if d not in csd:
-            lines.append(f"  • ▼ {d}")
+            if d == "🔴 проблемы сервисов:":
+                lines.append("  • ▼ сервисы: ранее были проблемы — теперь все юниты active")
+            else:
+                m = re.match(r"\s*•\s+([\w.-]+): юнит упал \(failed\)", d)
+                if m and _unit_active(m.group(1)):
+                    lines.append(f"  • ✅ РЕШЕНО: {m.group(1)} (failed → active)")
+                else:
+                    lines.append(f"  • ▼ {d}")
     # метрики: delta (диск/load/vectors/инциденты)
     for key, label in [("disk_pct", "диск"), ("load_pct", "load"),
                           ("vectors", "vectors"), ("open_incidents", "инциденты")]:
