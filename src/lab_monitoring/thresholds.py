@@ -8,7 +8,7 @@ Both monitors MUST read thresholds from here so they never diverge
 (see DDP 2026-07-13: two monitors had different disk thresholds → contradiction).
 
 Sources are noted inline:
-  - disk 80/90 : ADR-039 disk rotation policy (warn before it's too late)
+  - disk 88/90 : ADR-039 disk rotation policy (warn before it's too late)
   - mem 85/95  : Linux uses cache/buffers; available RAM matters more than used
   - load 2x/4x : research — load > cores = waiting; 2x = serious, 4x = critical
   - swap 10/30 : any notable swap on a ~8G RAM server is a warning
@@ -23,8 +23,8 @@ from dataclasses import dataclass
 class AlertConfig:
     """Thresholds for alerting. Tuned for a single-server lab setup."""
 
-    # Disk: alert before it's too late. 80% = warning, 90% = critical
-    disk_warn_pct: float = 80.0
+    # Disk: alert before it's too late. 88% = warning, 90% = critical
+    disk_warn_pct: float = 88.0
     disk_critical_pct: float = 90.0
 
     # Memory: Linux uses cache/buffers, so available RAM matters more than used
