@@ -437,7 +437,10 @@ def scan_gateway_log_errors_1h():
         r"rate_limit|429|FailoverError|candidate_failed|embedded_run_agent_end|"
         r"embedded_run_failover|model_fallback|All models failed|Request was aborted|"
         r"timeout|message processed|stopReason=stop", re.I)
+    # B2 (red line #37): web_fetch 404 — benign, классифицируем отдельно, НЕ считаем ошибкой
+    WEB404_RE = re.compile(r"\[tools\]\s*web_fetch|Web fetch failed \(404\)", re.I)
     try:
+        web404 = {}
         files = glob.glob("/tmp/openclaw/openclaw-*.log")
         if not files:
             return (0, ["(файл лога гейтвея не найден)"])
@@ -468,15 +471,44 @@ def scan_gateway_log_errors_1h():
                 if dt < cutoff:
                     continue
                 m = o.get("message", "")
+                # B2: web_fetch 404 — benign, НЕ подавляем и НЕ считаем за ошибку
+                if WEB404_RE.search(m):
+                    url = ""
+                    rp = o.get("raw_params")
+                    if isinstance(rp, dict):
+                        url = rp.get("url") or ""
+                    if not url:
+                        rm = re.search(r'raw_params=\{[^{}]*?"url"\s*:\s*"([^"]+)"', m)
+                        if rm:
+                            url = rm.group(1)
+                    if not url:
+                        um = re.search(r"https?://\S+", m)
+                        if um:
+                            url = um.group(0)
+                    url = (url[:80] + "…") if len(url) > 80 else url
+                    key = url or "(url неизвестен)"
+                    web404[key] = web404.get(key, 0) + 1
+                    continue
                 if KEY_EXHAUSTION_RE.search(m):
                     continue
                 cnt += 1
                 cats[_err_cat(m)] = cats.get(_err_cat(m), 0) + 1
+        web404_lines = []
+        if web404:
+            web404_lines.append(f"🌐 web 404 (benign, НЕ ошибка доставки): {sum(web404.values())} за 1ч")
+            for u, c in sorted(web404.items(), key=lambda x: -x[1])[:5]:
+                web404_lines.append(f"    – {u}: {c}")
         if cnt == 0:
-            return (0, ["🔍 ошибок в логе гейтвея за 1ч: 0 (истощение ключа исключено)"])
+            base = ["🔍 ошибок в логе гейтвея за 1ч: 0 (истощение ключа исключено)"]
+            if web404_lines:
+                base += [""] + web404_lines
+            return (0, base)
         lines = [f"🔍 ошибок в логе гейтвея за 1ч: {cnt} (истощение ключа исключено)"]
         for sub, c in sorted(cats.items(), key=lambda x: -x[1])[:6]:
             lines.append(f"    · {sub}: {c}")
+        if web404_lines:
+            lines.append("")
+            lines.extend(web404_lines)
         return (cnt, lines)
     except Exception as e:
         return (None, [f"ERROR scan_gateway_log: {e}"])
@@ -957,6 +989,7 @@ def cat_services():
     упавшие юниты (systemctl --state=failed), неслушающие порты из ExecStart юнитов
     и неотвечающие критичные порты (MONITOR_PORTS)."""
     problems = []
+    restart_info = []  # B2: benign-инфо по Restart=always/on-failure юнитам
     # 1. упавшие юниты (явно)
     failed_out = run("systemctl --state=failed --type=service --no-legend --no-pager", timeout=10).stdout.strip()
     failed_units = []
@@ -1005,6 +1038,9 @@ def cat_services():
                     if n >= NRESTARTS_LIFETIME_WARN:
                         parts.append(f"lifetime {n}")
                     problems.append(f"{unit}: перезапуски ({'; '.join(parts)})")
+                else:
+                    # B2 (red line #37): показываем Restart+NRestarts, НЕ подавляем (benign, не авария)
+                    restart_info.append(f"{unit}: Restart={rp}, NRestarts={n}")
     save_services_state(new_state)
     # 3. критичные порты (явный список)
     for p in MONITOR_PORTS:
@@ -1016,6 +1052,9 @@ def cat_services():
         details += [f"  • {x}" for x in problems]
     else:
         details.append(f"все юниты стабильны (проверено {len(new_state)})")
+    if restart_info:
+        details.append("🔄 auto-restart юниты (benign, НЕ авария):")
+        details += [f"  • {x}" for x in restart_info]
     ok = len(problems) == 0
     summary = "Сервисы: OK" if ok else f"Сервисы: {len(problems)} пробл."
     return ok, summary, details
