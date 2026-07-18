@@ -424,6 +424,150 @@ def build_two_phase(new_releases: list[dict], trends: list[dict],
 
 # ─── Форматирование legacy / сохранение ───────────────────────────────────────
 
+# ─── 3 варианта формата дайджеста (DDP, выбор ЗавЛаба 18.07) ──────────────────
+
+_SEV_RANK = {"🔴 CRITICAL": 4, "🟠 HIGH": 3, "🟡 MEDIUM": 2, "🔵 LOW": 1, "⚪ UNKNOWN": 0}
+_SEV_CANON = {"🔴 CRITICAL": "CRITICAL", "🟠 HIGH": "HIGH", "🟡 MEDIUM": "MEDIUM",
+              "🔵 LOW": "LOW", "⚪ UNKNOWN": "UNKNOWN"}
+
+
+def _sev_of(cve):
+    return _osv_severity(cve["vulns"][0]) if cve.get("vulns") else "⚪ UNKNOWN"
+
+
+def _sev_summary(stack: dict) -> dict:
+    c = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "UNKNOWN": 0}
+    for tgt, v in stack.items():
+        if not isinstance(v, dict) or not v.get("cves"):
+            continue
+        for cve in v["cves"]:
+            c[_SEV_CANON[_sev_of(cve)]] += 1
+    return c
+
+
+def _cve_targets(stack: dict, levels=("🔴 CRITICAL", "🟠 HIGH")) -> list:
+    out = []
+    for tgt, v in stack.items():
+        if not isinstance(v, dict) or not v.get("cves"):
+            continue
+        if any(_sev_of(c) in levels for c in v["cves"]):
+            out.append(tgt)
+    return out
+
+
+def _high_pkgs(stack: dict) -> list:
+    pkgs = set()
+    for tgt, v in stack.items():
+        if not isinstance(v, dict) or not v.get("cves"):
+            continue
+        for cve in v["cves"]:
+            if _sev_of(cve) in ("🔴 CRITICAL", "🟠 HIGH"):
+                pkgs.add(cve["package"])
+    return sorted(pkgs)
+
+
+def build_v1(new_releases, trends, stack) -> str:
+    """Вариант 1 — действие прежде всего (decision-first)."""
+    stamp = _now_msk().strftime("%d.%m %H:%M")
+    sev = _sev_summary(stack)
+    high = sev["CRITICAL"] + sev["HIGH"]
+    med = sev["MEDIUM"]
+    active = high + med > 0
+    if active:
+        overall, summ = "🟠", "есть что проверить"
+    elif new_releases or trends:
+        overall, summ = "🟡", "есть обновления"
+    else:
+        overall, summ = "🟢", "спокойно"
+    lines = [f"🐦‍⬛ Внешний патруль · {stamp} МСК · {overall} {summ}"]
+    if overall == "🟢":
+        return "\n".join(lines)
+    if active:
+        lines.append("Что сделать: «go» → обновлю venv с HIGH/MED CVE (только CVE-фикс, системный python не трогаю)")
+    if high + med > 0:
+        lines.append(f"• CVE (активные): {high} HIGH · {med} MED · остальное — шум")
+        for tgt, v in stack.items():
+            if not isinstance(v, dict) or not v.get("cves"):
+                continue
+            pkgs = [f"{c['package']}({_SEV_CANON[_sev_of(c)]})"
+                    for c in v["cves"] if _sev_of(c) in ("🔴 CRITICAL", "🟠 HIGH")]
+            if pkgs:
+                lines.append(f"  - {_short(tgt)}: " + ", ".join(pkgs))
+    if new_releases:
+        lines.append(f"• Релизы (важные для тебя): {len(new_releases)}")
+        for r in new_releases[:8]:
+            flag = " 🔒" if r.get("security") else ""
+            lines.append(f"  - {r['repo']} → {r['tag']}{flag}")
+    if trends:
+        lines.append("• Тренды: скрыто (не по лабе)")
+    return "\n".join(lines)
+
+
+def build_v2(new_releases, trends, stack) -> str:
+    """Вариант 2 — утренний бриф (шаблонная человеческая речь, БЕЗ LLM)."""
+    d = _now_msk().strftime("%d.%m")
+    sev = _sev_summary(stack)
+    high = sev["CRITICAL"] + sev["HIGH"]
+    med = sev["MEDIUM"]
+    if high + med == 0 and not new_releases and not trends:
+        return f"🐦‍⬛ Утро, {d} — тихо, внимания не требует."
+    lines = [f"🐦‍⬛ Утро, {d}"]
+    if high + med > 0:
+        tgs = [_short(t) for t in _cve_targets(stack)]
+        pkgs = _high_pkgs(stack)
+        lines.append(f"В {len(tgs)} твоих проектах ({', '.join(tgs)}) зависли старые пакеты: "
+                     f"{', '.join(pkgs[:3])} висят с HIGH-уязвимостями. Не критично, но реально.")
+        lines.append("Дам «go» — обновлю только их, системный python не трогаю.")
+    else:
+        lines.append("Серьёзных дыр в твоих venv нет.")
+    if new_releases:
+        sec = [r for r in new_releases if r.get("security")]
+        tail = f" ({', '.join(r['repo'].split('/')[-1] for r in sec[:3])}…)" if sec else ""
+        lines.append(f"Из релизов ничего страшного: {len(sec)} выкатили безопасные обновы{tail}.")
+    lines.append("Тренды дня (ECC, superpowers) к лабе не относятся — не выношу.")
+    lines.append("👉 Жду «go» на фикс venv." if high + med > 0 else "👉 Всё под контролем.")
+    return "\n".join(lines)
+
+
+def build_v3(new_releases, trends, stack) -> str:
+    """Вариант 3 — статус-карточка (SRE status-card, матрица severity)."""
+    stamp = _now_msk().strftime("%d.%m %H:%M")
+    sev = _sev_summary(stack)
+    high = sev["CRITICAL"] + sev["HIGH"]
+    med = sev["MEDIUM"]
+    if high + med == 0 and not new_releases and not trends:
+        return f"🐦‍⬛ Патруль · {stamp} МСК · 🟢 0H 0M — спокойно"
+    hdr = f"🟢 0H 0M" if high + med == 0 else f"🟠 {high}H {med}M"
+    lines = [f"🐦‍⬛ Патруль · {stamp} МСК · {hdr}"]
+    if new_releases:
+        sec = sum(1 for r in new_releases if r.get("security"))
+        top3 = ", ".join(r["repo"].split("/")[-1] for r in new_releases[:3])
+        lines.append(f"📦 Релизы: {len(new_releases)} (🔒 {sec}) — {top3} обновились")
+    if trends:
+        top = trends[0]
+        lines.append(f"📈 Тренды: +{top['velocity']}⭐/сут {top['repo'].split('/')[-1]} (не по лабе)")
+    if high + med > 0:
+        lines.append("🔧 CVE по venv:")
+        for tgt, v in stack.items():
+            if not isinstance(v, dict) or not v.get("cves"):
+                continue
+            th = sum(1 for c in v["cves"] if _sev_of(c) in ("🔴 CRITICAL", "🟠 HIGH"))
+            tm = sum(1 for c in v["cves"] if _sev_of(c) == "🟡 MEDIUM")
+            if th + tm == 0:
+                continue
+            icon = "🔴" if th > 0 else "🟠"
+            lines.append(f"  {_short(tgt):12} {icon} {th}H {tm}M")
+    lines.append("👉 «go» → фикс venv (только CVE)")
+    return "\n".join(lines)
+
+
+def _build_variant(n, new_releases, trends, stack, as_json=False):
+    if as_json:
+        return json.dumps({"variant": n, "releases": new_releases, "trends": trends, "stack": stack},
+                          ensure_ascii=False, indent=2)
+    return {1: build_v1, 2: build_v2, 3: build_v3}[n](new_releases, trends, stack)
+
+
 def format_report(pypi=None, hn=None, github=None, rss=None, cve=None, as_json=False) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if as_json:
@@ -509,7 +653,28 @@ def main() -> None:
     p.add_argument("--telegram", action="store_true", help="Отправить в Telegram (токен из openclaw.json)")
     p.add_argument("--telegram-token", type=str, help="Telegram bot token (иначе из openclaw.json)")
     p.add_argument("--chat-id", type=str, default="173681771", help="Telegram chat ID")
+    p.add_argument("--variant", type=int, choices=[1, 2, 3], default=None,
+                   help="Вариант формата дайджеста: 1=действие, 2=бриф, 3=карточка")
+    p.add_argument("--collect-json", type=str, help="Собрать данные и сохранить в JSON (без вывода/отправки)")
+    p.add_argument("--from-json", type=str, help="Построить отчёт из сохранённого JSON (--variant N)")
     args = parser_args(p)
+
+    if args.collect_json:
+        registry = _load_json(REGISTRY_PATH)
+        state = _load_json(STATE_PATH)
+        new_releases, seen = releases_watch(registry, state)
+        trends = github_trending(keys=registry.get("trends", {}).get("search_keys"),
+                                 per_key=registry.get("trends", {}).get("per_key", 5))
+        stack = our_stack_scan(registry.get("security_scan", {}).get("targets", []))
+        json.dump({"releases": new_releases, "trends": trends, "stack": stack},
+                  open(args.collect_json, "w"), ensure_ascii=False, indent=2)
+        print(f"collected -> {args.collect_json} (releases={len(new_releases)}, cve_targets={len(_cve_targets(stack))})")
+        return
+
+    if args.from_json:
+        data = json.load(open(args.from_json))
+        print(_build_variant(args.variant or 1, data["releases"], data["trends"], data["stack"], as_json=args.json))
+        return
 
     if args.two_phase:
         registry = _load_json(REGISTRY_PATH)
@@ -520,7 +685,10 @@ def main() -> None:
             per_key=registry.get("trends", {}).get("per_key", 5),
         )
         stack = our_stack_scan(registry.get("security_scan", {}).get("targets", []))
-        report = build_two_phase(new_releases, trends, stack, as_json=args.json)
+        if args.variant:
+            report = _build_variant(args.variant, new_releases, trends, stack, as_json=args.json)
+        else:
+            report = build_two_phase(new_releases, trends, stack, as_json=args.json)
 
         print(report)
 
