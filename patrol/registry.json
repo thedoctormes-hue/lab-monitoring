@@ -1,0 +1,213 @@
+{
+  "version": "v4",
+  "updated": "2026-07-16",
+  "owner": "raven",
+  "groups": {
+    "1_platform": {
+      "priority": "HIGH",
+      "track": [
+        "releases",
+        "security"
+      ],
+      "repos": [
+        "openclaw/openclaw",
+        "nodejs/node",
+        "python/cpython"
+      ]
+    },
+    "2_search": {
+      "priority": "HIGH",
+      "track": [
+        "releases",
+        "security",
+        "models"
+      ],
+      "repos": [
+        "searxng/searxng",
+        "huggingface/transformers",
+        "sentence-transformers/sentence-transformers",
+        "facebook/faiss",
+        "huggingface/huggingface_hub"
+      ]
+    },
+    "3_webstack": {
+      "priority": "HIGH",
+      "track": [
+        "security",
+        "releases"
+      ],
+      "repos": [
+        "tiangolo/fastapi",
+        "encode/starlette",
+        "encode/uvicorn",
+        "pydantic/pydantic",
+        "sqlalchemy/sqlalchemy",
+        "psycopg/psycopg",
+        "redis/redis-py"
+      ]
+    },
+    "4_frontend": {
+      "priority": "MEDIUM",
+      "track": [
+        "releases",
+        "security"
+      ],
+      "repos": [
+        "facebook/react",
+        "vitejs/vite",
+        "tailwindlabs/tailwindcss",
+        "microsoft/TypeScript",
+        "radix-ui",
+        "recharts",
+        "vercel/next.js",
+        "pmndrs/zustand"
+      ]
+    },
+    "5_scraping": {
+      "priority": "MEDIUM",
+      "track": [
+        "releases",
+        "security"
+      ],
+      "repos": [
+        "scrapy/scrapy",
+        "dav0830/scrapling",
+        "microsoft/playwright-python",
+        "microsoft/patchright",
+        "TeamHG-Memex/beautifulsoup4"
+      ]
+    },
+    "6_telegram": {
+      "priority": "MEDIUM",
+      "track": [
+        "releases"
+      ],
+      "repos": [
+        "aiogram/aiogram"
+      ]
+    },
+    "7_llm_providers": {
+      "priority": "HIGH",
+      "track": [
+        "releases",
+        "security",
+        "changelog"
+      ],
+      "repos": [
+        "openai/openai-python",
+        "googleapis/python-genai",
+        "tavily-ai/tavily-python",
+        "mistralai/mistral-inference",
+        "groq/groq-api-python",
+        "cerebras/cerebras-cloud",
+        "cohere-ai/cohere-python",
+        "exa-labs/exa",
+        "tinyfish-ai/tinyfish",
+        "olostep/olostep"
+      ]
+    },
+    "8_netsec": {
+      "priority": "HIGH",
+      "track": [
+        "security",
+        "releases"
+      ],
+      "repos": [
+        "v2fly/xray-core",
+        "jpillora/chisel",
+        "UncomplicatedFirewall/ufw",
+        "certbot/certbot",
+        "pyca/cryptography",
+        "pyca/pyopenssl",
+        "paramiko/paramiko",
+        "fail2ban/fail2ban"
+      ]
+    },
+    "9_infra": {
+      "priority": "HIGH",
+      "track": [
+        "security",
+        "releases"
+      ],
+      "repos": [
+        "moby/moby",
+        "nginx/nginx",
+        "postgres/postgres",
+        "redis/redis",
+        "prometheus/node_exporter",
+        "prometheus-community/postgres_exporter",
+        "systemd/systemd"
+      ]
+    },
+    "10_docker_apps": {
+      "priority": "HIGH",
+      "track": [
+        "security",
+        "releases"
+      ],
+      "repos": [
+        "Mintplex-Labs/anything-llm",
+        "telegrammessenger/proxy",
+        "amnezia/amneziawg"
+      ]
+    },
+    "11_mldata": {
+      "priority": "LOW",
+      "track": [
+        "releases",
+        "security"
+      ],
+      "repos": [
+        "scikit-learn/scikit-learn",
+        "scipy/scipy",
+        "numpy/numpy",
+        "pandas-dev/pandas",
+        "pytorch/pytorch"
+      ]
+    },
+    "12_utils": {
+      "priority": "LOW",
+      "track": [
+        "security",
+        "releases"
+      ],
+      "repos": [
+        "FFmpeg/FFmpeg",
+        "sivel/speedtest-cli",
+        "git/git",
+        "cli/cli"
+      ]
+    },
+    "13_mcp": {
+      "priority": "MEDIUM",
+      "track": [
+        "releases",
+        "new_servers"
+      ],
+      "repos": [
+        "modelcontextprotocol/python-sdk",
+        "modelcontextprotocol/servers"
+      ]
+    }
+  },
+  "trends": {
+    "priority": "MEDIUM",
+    "search_keys": [
+      "agentic",
+      "llm-tools",
+      "autonomous-agents",
+      "rag",
+      "web-search",
+      "mcp-server"
+    ],
+    "per_key": 5
+  },
+  "security_scan": {
+    "method": "pip-audit",
+    "targets": [
+      "/root/LabDoctorM/projects/zprr-tracker/backend/venv/bin/python",
+      "/root/LabDoctorM/projects/autoexpert/.venv/bin/python",
+      "/root/LabDoctorM/projects/snablab/backend/.venv/bin/python"
+    ]
+  }
+}
