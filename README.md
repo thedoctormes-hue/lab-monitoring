@@ -46,6 +46,7 @@ status: active
 
 - **Диск:** `disk_warn_pct = 80`, `disk_crit_pct = 90` (норма < 80%).
 - **Петли auto-restart:** `NRESTARTS_LIFETIME_WARN = 20` — сервис проблемный при `lifetime ≥ 20` перезапусков (или дельте ≥ `CRASH_LOOP_DELTA` за час).
+- **Benign-классификация (red line #37, B2):** `web_fetch 404` и юниты с `Restart=always/on-failure` при низком `NRestarts` показываются **с контекстом** (URL / `NRestarts=N`), НЕ подавляются и НЕ считаются ошибкой доставки / аварией. Сигнал виден, но не поднимает «ВНИМАНИЕ» (борьба с alert fatigue, не suppression).
 - **ONNX-embedder (:8082):** токен `onnx_embedder=OK|FAIL` в категории [4]; при FAIL семантический поиск лабы не работает.
 - **reindex-incremental.service:** детект через `is-failed` (не `is-active`); при FAILED без активного таймера — advice «restart service».
 - **MONITOR_PORTS:** `[5432, 18789, 8086, 8087, 8888]` (порт 8710 orex удалён 2026-07-14 — ложный 🔴).
