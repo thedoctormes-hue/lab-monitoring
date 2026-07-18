@@ -22,6 +22,7 @@
     python3 -m lab_monitoring.stack_patrol --pypi                 # старые источники (legacy)
     python3 -m lab_monitoring.stack_patrol --save                 # сохранить JSON
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,7 +41,9 @@ from typing import Any
 REPORTS_DIR = Path(
     os.environ.get("LABMON_STACK_PATROL_DIR", "/var/lib/labmon/stack_patrol")
 )
-_BASE = Path(__file__).resolve().parent.parent.parent  # .../lab-monitoring (корень проекта)
+_BASE = (
+    Path(__file__).resolve().parent.parent.parent
+)  # .../lab-monitoring (корень проекта)
 REGISTRY_PATH = _BASE / "patrol" / "registry.json"
 STATE_PATH = _BASE / "patrol" / "state.json"
 TG_CFG_PATH = Path(os.path.expanduser("~/.openclaw/openclaw.json"))
@@ -49,12 +52,16 @@ MSK = timezone(timedelta(hours=3))
 
 # ─── Утилиты ──────────────────────────────────────────────────────────────────
 
+
 def _now_msk() -> datetime:
     return datetime.now(timezone.utc).astimezone(MSK)
 
 
 def _fetch_json(url: str, timeout: int = 15, token: str | None = None) -> Any:
-    headers = {"User-Agent": "labmon-stack-patrol/2.0", "Accept": "application/vnd.github+json"}
+    headers = {
+        "User-Agent": "labmon-stack-patrol/2.0",
+        "Accept": "application/vnd.github+json",
+    }
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
@@ -103,17 +110,59 @@ def _get_installed_version(pkg: str) -> str | None:
 # ─── PyPI (legacy) ────────────────────────────────────────────────────────────
 
 STACK_PACKAGES_CORE = [
-    "fastapi", "starlette", "uvicorn", "pydantic", "pydantic-settings",
-    "SQLAlchemy", "alembic", "asyncpg", "httpx", "aiohttp", "requests",
-    "aiogram", "redis", "hiredis", "python-jose", "passlib", "bcrypt",
-    "python-multipart", "aiosqlite", "aiofiles", "python-dotenv", "PyYAML",
-    "loguru", "structlog", "typer", "click", "sse-starlette", "slowapi",
-    "pytest", "pytest-asyncio", "coverage", "ruff", "mypy",
+    "fastapi",
+    "starlette",
+    "uvicorn",
+    "pydantic",
+    "pydantic-settings",
+    "SQLAlchemy",
+    "alembic",
+    "asyncpg",
+    "httpx",
+    "aiohttp",
+    "requests",
+    "aiogram",
+    "redis",
+    "hiredis",
+    "python-jose",
+    "passlib",
+    "bcrypt",
+    "python-multipart",
+    "aiosqlite",
+    "aiofiles",
+    "python-dotenv",
+    "PyYAML",
+    "loguru",
+    "structlog",
+    "typer",
+    "click",
+    "sse-starlette",
+    "slowapi",
+    "pytest",
+    "pytest-asyncio",
+    "coverage",
+    "ruff",
+    "mypy",
 ]
 STACK_PACKAGES_EXTRA = [
-    "boto3", "aioboto3", "openai", "beautifulsoup4", "lxml", "pdfminer.six",
-    "pillow", "openpyxl", "paramiko", "Jinja2", "Mako", "python-dateutil",
-    "tzlocal", "cryptography", "PyNaCl", "imap-tools", "Telethon", "playwright",
+    "boto3",
+    "aioboto3",
+    "openai",
+    "beautifulsoup4",
+    "lxml",
+    "pdfminer.six",
+    "pillow",
+    "openpyxl",
+    "paramiko",
+    "Jinja2",
+    "Mako",
+    "python-dateutil",
+    "tzlocal",
+    "cryptography",
+    "PyNaCl",
+    "imap-tools",
+    "Telethon",
+    "playwright",
     "reportlab",
 ]
 
@@ -138,16 +187,34 @@ def pypi_check(packages: list[str] | None = None) -> list[dict]:
                         flag = "⚠️"
                 except (IndexError, ValueError):
                     pass
-            results.append({"package": pkg, "installed": installed, "latest": latest, "flag": flag})
+            results.append(
+                {"package": pkg, "installed": installed, "latest": latest, "flag": flag}
+            )
         except Exception as e:
-            results.append({"package": pkg, "installed": installed, "latest": "ERROR", "flag": "❌", "error": str(e)})
+            results.append(
+                {
+                    "package": pkg,
+                    "installed": installed,
+                    "latest": "ERROR",
+                    "flag": "❌",
+                    "error": str(e),
+                }
+            )
     return results
 
 
 # ─── Hacker News (legacy) ─────────────────────────────────────────────────────
 
-HN_QUERIES = ["fastapi", "pydantic", "sqlalchemy", "python async", "python security",
-              "python llm", "uvicorn", "alembic"]
+HN_QUERIES = [
+    "fastapi",
+    "pydantic",
+    "sqlalchemy",
+    "python async",
+    "python security",
+    "python llm",
+    "uvicorn",
+    "alembic",
+]
 
 
 def hn_scan() -> list[dict]:
@@ -158,16 +225,26 @@ def hn_scan() -> list[dict]:
             url = f"https://hn.algolia.com/api/v1/search?query={urllib.parse.quote(query)}&tags=story&hitsPerPage=5"
             data = _fetch_json(url)
             for hit in data.get("hits", []):
-                story_url = hit.get("url") or f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}"
+                story_url = (
+                    hit.get("url")
+                    or f"https://news.ycombinator.com/item?id={hit.get('objectID', '')}"
+                )
                 if story_url in seen:
                     continue
                 seen.add(story_url)
                 points = hit.get("points") or 0
                 if points < 10:
                     continue
-                results.append({"query": query, "title": hit.get("title", ""), "points": points,
-                                "comments": hit.get("num_comments", 0), "date": hit.get("created_at", "")[:10],
-                                "url": story_url})
+                results.append(
+                    {
+                        "query": query,
+                        "title": hit.get("title", ""),
+                        "points": points,
+                        "comments": hit.get("num_comments", 0),
+                        "date": hit.get("created_at", "")[:10],
+                        "url": story_url,
+                    }
+                )
         except Exception as e:
             results.append({"query": query, "error": str(e)})
     results.sort(key=lambda x: x.get("points", 0), reverse=True)
@@ -176,8 +253,13 @@ def hn_scan() -> list[dict]:
 
 # ─── GitHub trending по СКОРОСТИ РОСТА (fix «поебени») ─────────────────────────
 
-def github_trending(keys: list[str] | None = None, per_key: int = 5, days: int = 7,
-                    min_velocity: float = 15.0) -> list[dict]:
+
+def github_trending(
+    keys: list[str] | None = None,
+    per_key: int = 5,
+    days: int = 7,
+    min_velocity: float = 15.0,
+) -> list[dict]:
     """Trending = недавние репо с высокой скоростью роста звёзд (⭐/сут), не all-time."""
     if keys is None:
         keys = ["agentic", "llm-tools", "autonomous-agents", "rag", "mcp-server"]
@@ -189,19 +271,29 @@ def github_trending(keys: list[str] | None = None, per_key: int = 5, days: int =
         try:
             data = _fetch_json(
                 f"https://api.github.com/search/repositories?q={urllib.parse.quote(q)}"
-                f"&sort=stars&order=desc&per_page={per_key}", token=token)
+                f"&sort=stars&order=desc&per_page={per_key}",
+                token=token,
+            )
             for item in data.get("items", []):
                 stars = item.get("stargazers_count", 0)
                 created = item.get("created_at", "")
                 try:
-                    age = (datetime.now(timezone.utc) - datetime.fromisoformat(created.replace("Z", "+00:00"))).days or 1
+                    age = (
+                        datetime.now(timezone.utc)
+                        - datetime.fromisoformat(created.replace("Z", "+00:00"))
+                    ).days or 1
                     velocity = stars / age if age > 0 else stars
                 except Exception:
                     velocity = 0.0
                 if velocity >= min_velocity:
-                    out.append({"repo": item["full_name"], "stars": stars,
-                                "velocity": round(velocity, 1),
-                                "desc": (item.get("description") or "")[:60]})
+                    out.append(
+                        {
+                            "repo": item["full_name"],
+                            "stars": stars,
+                            "velocity": round(velocity, 1),
+                            "desc": (item.get("description") or "")[:60],
+                        }
+                    )
         except Exception:
             pass
     out.sort(key=lambda x: x["velocity"], reverse=True)
@@ -221,11 +313,17 @@ def rss_scan() -> list[dict]:
     results = []
     for name, url in RSS_FEEDS:
         try:
-            xml = urllib.request.urlopen(url, timeout=10).read().decode("utf-8", errors="replace")
-            titles = re.findall(r'<title[^>]*>([^<]+)</title>', xml)
+            xml = (
+                urllib.request.urlopen(url, timeout=10)
+                .read()
+                .decode("utf-8", errors="replace")
+            )
+            titles = re.findall(r"<title[^>]*>([^<]+)</title>", xml)
             links = re.findall(r'<link[^>]*href="([^"]+)"', xml)
             for title, link in list(zip(titles[1:6], links[:5])):
-                results.append({"feed": name, "title": title.strip(), "url": link.strip()})
+                results.append(
+                    {"feed": name, "title": title.strip(), "url": link.strip()}
+                )
         except Exception as e:
             results.append({"feed": name, "error": str(e)})
     return results
@@ -255,9 +353,17 @@ def _osv_severity(vuln: dict) -> str:
 
 
 def _osv_query(name: str, version: str) -> list[dict]:
-    payload = json.dumps({"version": version, "package": {"name": name, "ecosystem": "PyPI"}}).encode()
-    req = urllib.request.Request(OSV_API, data=payload,
-                                 headers={"Content-Type": "application/json", "User-Agent": "labmon-stack-patrol/2.0"})
+    payload = json.dumps(
+        {"version": version, "package": {"name": name, "ecosystem": "PyPI"}}
+    ).encode()
+    req = urllib.request.Request(
+        OSV_API,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "labmon-stack-patrol/2.0",
+        },
+    )
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read())
     return data.get("vulns", [])
@@ -273,14 +379,22 @@ def cve_check(packages: list[str] | None = None) -> list[dict]:
             continue
         try:
             for vuln in _osv_query(pkg, installed)[:3]:
-                results.append({"package": pkg, "installed": installed, "id": vuln.get("id", "?"),
-                                "summary": vuln.get("summary", "")[:100], "severity": _osv_severity(vuln)})
+                results.append(
+                    {
+                        "package": pkg,
+                        "installed": installed,
+                        "id": vuln.get("id", "?"),
+                        "summary": vuln.get("summary", "")[:100],
+                        "severity": _osv_severity(vuln),
+                    }
+                )
         except Exception as e:
             results.append({"package": pkg, "installed": installed, "error": str(e)})
     return results
 
 
 # ─── ФАЗА 1: releases-watch (state-diff) ──────────────────────────────────────
+
 
 def _load_json(path: Path) -> dict:
     try:
@@ -292,18 +406,31 @@ def _load_json(path: Path) -> dict:
 def _gh_release_latest(repo: str) -> dict | None:
     """Последний релиз репо: через `gh api` (авторизован, без лимита) либо Atom-ленту."""
     try:
-        out = subprocess.run(["gh", "api", f"/repos/{repo}/releases?per_page=1", "--jq", ".[0]"],
-                             capture_output=True, text=True, timeout=25)
+        out = subprocess.run(
+            ["gh", "api", f"/repos/{repo}/releases?per_page=1", "--jq", ".[0]"],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        )
         if out.returncode == 0 and out.stdout.strip() not in ("", "null"):
             return json.loads(out.stdout)
     except Exception:
         pass
     try:
-        xml = urllib.request.urlopen(f"https://github.com/{repo}/releases.atom", timeout=15).read().decode("utf-8", "replace")
+        xml = (
+            urllib.request.urlopen(
+                f"https://github.com/{repo}/releases.atom", timeout=15
+            )
+            .read()
+            .decode("utf-8", "replace")
+        )
         m = re.search(r"<entry>.*?<title>([^<]+)</title>", xml, re.S)
         u = re.search(r"<entry>.*?<updated>([^<]+)</updated>", xml, re.S)
         if m:
-            return {"tag_name": m.group(1).strip(), "published_at": u.group(1).strip() if u else None}
+            return {
+                "tag_name": m.group(1).strip(),
+                "published_at": u.group(1).strip() if u else None,
+            }
     except Exception:
         pass
     return None
@@ -327,9 +454,15 @@ def releases_watch(registry: dict, state: dict) -> tuple[list[dict], dict]:
                 seen[repo] = {"tag": tag, "published_at": pub}
                 prev = state.get("releases", {}).get(repo)
                 if prev is None or prev.get("tag") != tag:
-                    new_releases.append({"repo": repo, "tag": tag, "published_at": pub,
-                                         "security": "security" in gdata.get("track", []),
-                                         "priority": gdata.get("priority")})
+                    new_releases.append(
+                        {
+                            "repo": repo,
+                            "tag": tag,
+                            "published_at": pub,
+                            "security": "security" in gdata.get("track", []),
+                            "priority": gdata.get("priority"),
+                        }
+                    )
             except Exception:
                 seen[repo] = state.get("releases", {}).get(repo, {})
     new_releases.sort(key=lambda r: (r.get("priority") != "HIGH", r["repo"]))
@@ -337,6 +470,7 @@ def releases_watch(registry: dict, state: dict) -> tuple[list[dict], dict]:
 
 
 # ─── ФАЗА 2: наш стек — outdated + CVE (через OSV) ───────────────────────────
+
 
 def our_stack_scan(targets: list[str]) -> dict:
     """Для каждого python-окружения: outdated + CVE (только по outdated, через OSV)."""
@@ -346,8 +480,12 @@ def our_stack_scan(targets: list[str]) -> dict:
             report[tgt] = {"error": "not found"}
             continue
         try:
-            out = subprocess.run([tgt, "-m", "pip", "list", "--outdated", "--format=json"],
-                                 capture_output=True, text=True, timeout=90)
+            out = subprocess.run(
+                [tgt, "-m", "pip", "list", "--outdated", "--format=json"],
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
             outdated = json.loads(out.stdout) if out.stdout.strip() else []
         except Exception as e:
             report[tgt] = {"error": str(e)}
@@ -360,8 +498,14 @@ def our_stack_scan(targets: list[str]) -> dict:
             except Exception:
                 vulns = []
             if vulns:
-                cves.append({"package": name, "installed": ver,
-                             "latest": pkg.get("latest_version"), "vulns": vulns})
+                cves.append(
+                    {
+                        "package": name,
+                        "installed": ver,
+                        "latest": pkg.get("latest_version"),
+                        "vulns": vulns,
+                    }
+                )
         report[tgt] = {"outdated": outdated, "cves": cves}
     return report
 
@@ -374,14 +518,28 @@ def _short(tgt: str) -> str:
 
 # ─── Сборка двухфазного дайджеста (collapse-to-green) ────────────────────────
 
-def build_two_phase(new_releases: list[dict], trends: list[dict],
-                    stack: dict, as_json: bool = False) -> str:
+
+def build_two_phase(
+    new_releases: list[dict], trends: list[dict], stack: dict, as_json: bool = False
+) -> str:
     stamp = _now_msk().strftime("%d.%m %H:%M")
-    cve_total = sum(len(v.get("cves", [])) for v in stack.values() if isinstance(v, dict) and "cves" in v)
+    cve_total = sum(
+        len(v.get("cves", []))
+        for v in stack.values()
+        if isinstance(v, dict) and "cves" in v
+    )
 
     if as_json:
-        return json.dumps({"timestamp": _now_msk().isoformat(), "releases": new_releases,
-                           "trends": trends, "stack": stack}, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "timestamp": _now_msk().isoformat(),
+                "releases": new_releases,
+                "trends": trends,
+                "stack": stack,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     if cve_total > 0:
         overall, summary = "🔴", f"{cve_total} риск"
@@ -412,7 +570,9 @@ def build_two_phase(new_releases: list[dict], trends: list[dict],
             lines.append(f"  - {_short(tgt)}: {len(v['cves'])} CVE")
             for c in v["cves"][:5]:
                 sev = _osv_severity(c["vulns"][0]) if c.get("vulns") else "⚪"
-                lines.append(f"    · {c['package']} {c['installed']} → {c.get('latest')} ({sev})")
+                lines.append(
+                    f"    · {c['package']} {c['installed']} → {c.get('latest')} ({sev})"
+                )
         lines.append("• Обновить (план, только по «go»):")
         for tgt, v in stack.items():
             if not isinstance(v, dict) or not v.get("cves"):
@@ -426,9 +586,20 @@ def build_two_phase(new_releases: list[dict], trends: list[dict],
 
 # ─── 3 варианта формата дайджеста (DDP, выбор ЗавЛаба 18.07) ──────────────────
 
-_SEV_RANK = {"🔴 CRITICAL": 4, "🟠 HIGH": 3, "🟡 MEDIUM": 2, "🔵 LOW": 1, "⚪ UNKNOWN": 0}
-_SEV_CANON = {"🔴 CRITICAL": "CRITICAL", "🟠 HIGH": "HIGH", "🟡 MEDIUM": "MEDIUM",
-              "🔵 LOW": "LOW", "⚪ UNKNOWN": "UNKNOWN"}
+_SEV_RANK = {
+    "🔴 CRITICAL": 4,
+    "🟠 HIGH": 3,
+    "🟡 MEDIUM": 2,
+    "🔵 LOW": 1,
+    "⚪ UNKNOWN": 0,
+}
+_SEV_CANON = {
+    "🔴 CRITICAL": "CRITICAL",
+    "🟠 HIGH": "HIGH",
+    "🟡 MEDIUM": "MEDIUM",
+    "🔵 LOW": "LOW",
+    "⚪ UNKNOWN": "UNKNOWN",
+}
 
 
 def _sev_of(cve):
@@ -483,14 +654,19 @@ def build_v1(new_releases, trends, stack) -> str:
     if overall == "🟢":
         return "\n".join(lines)
     if active:
-        lines.append("Что сделать: «go» → обновлю venv с HIGH/MED CVE (только CVE-фикс, системный python не трогаю)")
+        lines.append(
+            "Что сделать: «go» → обновлю venv с HIGH/MED CVE (только CVE-фикс, системный python не трогаю)"
+        )
     if high + med > 0:
         lines.append(f"• CVE (активные): {high} HIGH · {med} MED · остальное — шум")
         for tgt, v in stack.items():
             if not isinstance(v, dict) or not v.get("cves"):
                 continue
-            pkgs = [f"{c['package']}({_SEV_CANON[_sev_of(c)]})"
-                    for c in v["cves"] if _sev_of(c) in ("🔴 CRITICAL", "🟠 HIGH")]
+            pkgs = [
+                f"{c['package']}({_SEV_CANON[_sev_of(c)]})"
+                for c in v["cves"]
+                if _sev_of(c) in ("🔴 CRITICAL", "🟠 HIGH")
+            ]
             if pkgs:
                 lines.append(f"  - {_short(tgt)}: " + ", ".join(pkgs))
     if new_releases:
@@ -515,17 +691,25 @@ def build_v2(new_releases, trends, stack) -> str:
     if high + med > 0:
         tgs = [_short(t) for t in _cve_targets(stack)]
         pkgs = _high_pkgs(stack)
-        lines.append(f"В {len(tgs)} твоих проектах ({', '.join(tgs)}) зависли старые пакеты: "
-                     f"{', '.join(pkgs[:3])} висят с HIGH-уязвимостями. Не критично, но реально.")
+        lines.append(
+            f"В {len(tgs)} твоих проектах ({', '.join(tgs)}) зависли старые пакеты: "
+            f"{', '.join(pkgs[:3])} висят с HIGH-уязвимостями. Не критично, но реально."
+        )
         lines.append("Дам «go» — обновлю только их, системный python не трогаю.")
     else:
         lines.append("Серьёзных дыр в твоих venv нет.")
     if new_releases:
         sec = [r for r in new_releases if r.get("security")]
-        tail = f" ({', '.join(r['repo'].split('/')[-1] for r in sec[:3])}…)" if sec else ""
-        lines.append(f"Из релизов ничего страшного: {len(sec)} выкатили безопасные обновы{tail}.")
+        tail = (
+            f" ({', '.join(r['repo'].split('/')[-1] for r in sec[:3])}…)" if sec else ""
+        )
+        lines.append(
+            f"Из релизов ничего страшного: {len(sec)} выкатили безопасные обновы{tail}."
+        )
     lines.append("Тренды дня (ECC, superpowers) к лабе не относятся — не выношу.")
-    lines.append("👉 Жду «go» на фикс venv." if high + med > 0 else "👉 Всё под контролем.")
+    lines.append(
+        "👉 Жду «go» на фикс venv." if high + med > 0 else "👉 Всё под контролем."
+    )
     return "\n".join(lines)
 
 
@@ -537,7 +721,7 @@ def build_v3(new_releases, trends, stack) -> str:
     med = sev["MEDIUM"]
     if high + med == 0 and not new_releases and not trends:
         return f"🐦‍⬛ Патруль · {stamp} МСК · 🟢 0H 0M — спокойно"
-    hdr = f"🟢 0H 0M" if high + med == 0 else f"🟠 {high}H {med}M"
+    hdr = "🟢 0H 0M" if high + med == 0 else f"🟠 {high}H {med}M"
     lines = [f"🐦‍⬛ Патруль · {stamp} МСК · {hdr}"]
     if new_releases:
         sec = sum(1 for r in new_releases if r.get("security"))
@@ -545,7 +729,9 @@ def build_v3(new_releases, trends, stack) -> str:
         lines.append(f"📦 Релизы: {len(new_releases)} (🔒 {sec}) — {top3} обновились")
     if trends:
         top = trends[0]
-        lines.append(f"📈 Тренды: +{top['velocity']}⭐/сут {top['repo'].split('/')[-1]} (не по лабе)")
+        lines.append(
+            f"📈 Тренды: +{top['velocity']}⭐/сут {top['repo'].split('/')[-1]} (не по лабе)"
+        )
     if high + med > 0:
         lines.append("🔧 CVE по venv:")
         for tgt, v in stack.items():
@@ -563,43 +749,62 @@ def build_v3(new_releases, trends, stack) -> str:
 
 def _build_variant(n, new_releases, trends, stack, as_json=False):
     if as_json:
-        return json.dumps({"variant": n, "releases": new_releases, "trends": trends, "stack": stack},
-                          ensure_ascii=False, indent=2)
+        return json.dumps(
+            {"variant": n, "releases": new_releases, "trends": trends, "stack": stack},
+            ensure_ascii=False,
+            indent=2,
+        )
     return {1: build_v1, 2: build_v2, 3: build_v3}[n](new_releases, trends, stack)
 
 
-def format_report(pypi=None, hn=None, github=None, rss=None, cve=None, as_json=False) -> str:
+def format_report(
+    pypi=None, hn=None, github=None, rss=None, cve=None, as_json=False
+) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     if as_json:
-        return json.dumps({"timestamp": ts, "pypi": pypi, "hn": hn, "github": github, "rss": rss, "cve": cve},
-                          ensure_ascii=False, indent=2)
+        return json.dumps(
+            {
+                "timestamp": ts,
+                "pypi": pypi,
+                "hn": hn,
+                "github": github,
+                "rss": rss,
+                "cve": cve,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
     lines = [f"🔍 Stack Patrol — {ts}", ""]
     if pypi is not None:
         lines.append(f"📦 PyPI ({len(pypi)} пакетов):")
         for it in pypi:
             if it["flag"] != "✅":
-                lines.append(f"  {it['flag']} {it['package']}: {it['installed']} → {it['latest']}")
+                lines.append(
+                    f"  {it['flag']} {it['package']}: {it['installed']} → {it['latest']}"
+                )
     if cve is not None:
         lines.append("")
         lines.append(f"🔒 CVE ({len(cve)}):")
         for it in cve:
             if "error" in it:
                 continue
-            lines.append(f"  {it.get('severity','?')} {it['package']} ({it['installed']}): {it.get('id','?')}")
+            lines.append(
+                f"  {it.get('severity', '?')} {it['package']} ({it['installed']}): {it.get('id', '?')}"
+            )
     if hn is not None:
         lines.append("")
         lines.append("🌐 Hacker News:")
         for it in hn[:20]:
             if "error" in it:
                 continue
-            lines.append(f"  [{it.get('points',0)}⭐] {it.get('title','')}")
+            lines.append(f"  [{it.get('points', 0)}⭐] {it.get('title', '')}")
     if github is not None:
         lines.append("")
         lines.append("🐙 GitHub Trending:")
         for it in github[:15]:
             if "error" in it:
                 continue
-            lines.append(f"  • {it['repo']} (+{it.get('velocity','?')}⭐/сут)")
+            lines.append(f"  • {it['repo']} (+{it.get('velocity', '?')}⭐/сут)")
     if rss is not None:
         lines.append("")
         lines.append("📰 RSS:")
@@ -623,15 +828,24 @@ def save_report(raw: str, extra: dict | None = None) -> Path:
 
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 
+
 def _send_telegram(token: str, chat_id: str, text: str) -> None:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     # дробим на чанки по 4000 символов
-    chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)]
+    chunks = [text[i : i + 4000] for i in range(0, len(text), 4000)]
     for ch in chunks:
-        payload = json.dumps({"chat_id": chat_id, "text": ch, "parse_mode": "HTML",
-                              "disable_web_page_preview": True}).encode()
+        payload = json.dumps(
+            {
+                "chat_id": chat_id,
+                "text": ch,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+        ).encode()
         try:
-            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            req = urllib.request.Request(
+                url, data=payload, headers={"Content-Type": "application/json"}
+            )
             urllib.request.urlopen(req, timeout=10)
         except Exception as e:
             print(f"⚠️ Telegram send failed: {e}")
@@ -639,41 +853,87 @@ def _send_telegram(token: str, chat_id: str, text: str) -> None:
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Stack Patrol — внешний патруль лаборатории")
-    p.add_argument("--two-phase", action="store_true", help="Двухфазный дайджест (релизы+тренды+CVE+обновления)")
+    p = argparse.ArgumentParser(
+        description="Stack Patrol — внешний патруль лаборатории"
+    )
+    p.add_argument(
+        "--two-phase",
+        action="store_true",
+        help="Двухфазный дайджест (релизы+тренды+CVE+обновления)",
+    )
     p.add_argument("--pypi", action="store_true", help="Только PyPI (legacy)")
     p.add_argument("--hn", action="store_true", help="Только Hacker News (legacy)")
-    p.add_argument("--github", action="store_true", help="Только GitHub trending (legacy)")
+    p.add_argument(
+        "--github", action="store_true", help="Только GitHub trending (legacy)"
+    )
     p.add_argument("--rss", action="store_true", help="Только RSS (legacy)")
     p.add_argument("--cve", action="store_true", help="Только CVE (legacy)")
     p.add_argument("--json", action="store_true", help="JSON output")
     p.add_argument("--save", action="store_true", help="Сохранить отчёт (JSON)")
-    p.add_argument("--dry-run", action="store_true", help="Не писать state/файл и не слать в TG")
-    p.add_argument("--telegram", action="store_true", help="Отправить в Telegram (токен из openclaw.json)")
-    p.add_argument("--telegram-token", type=str, help="Telegram bot token (иначе из openclaw.json)")
+    p.add_argument(
+        "--dry-run", action="store_true", help="Не писать state/файл и не слать в TG"
+    )
+    p.add_argument(
+        "--telegram",
+        action="store_true",
+        help="Отправить в Telegram (токен из openclaw.json)",
+    )
+    p.add_argument(
+        "--telegram-token", type=str, help="Telegram bot token (иначе из openclaw.json)"
+    )
     p.add_argument("--chat-id", type=str, default="173681771", help="Telegram chat ID")
-    p.add_argument("--variant", type=int, choices=[1, 2, 3], default=None,
-                   help="Вариант формата дайджеста: 1=действие, 2=бриф, 3=карточка")
-    p.add_argument("--collect-json", type=str, help="Собрать данные и сохранить в JSON (без вывода/отправки)")
-    p.add_argument("--from-json", type=str, help="Построить отчёт из сохранённого JSON (--variant N)")
+    p.add_argument(
+        "--variant",
+        type=int,
+        choices=[1, 2, 3],
+        default=None,
+        help="Вариант формата дайджеста: 1=действие, 2=бриф, 3=карточка",
+    )
+    p.add_argument(
+        "--collect-json",
+        type=str,
+        help="Собрать данные и сохранить в JSON (без вывода/отправки)",
+    )
+    p.add_argument(
+        "--from-json",
+        type=str,
+        help="Построить отчёт из сохранённого JSON (--variant N)",
+    )
     args = parser_args(p)
 
     if args.collect_json:
         registry = _load_json(REGISTRY_PATH)
         state = _load_json(STATE_PATH)
         new_releases, seen = releases_watch(registry, state)
-        trends = github_trending(keys=registry.get("trends", {}).get("search_keys"),
-                                 per_key=registry.get("trends", {}).get("per_key", 5))
+        trends = github_trending(
+            keys=registry.get("trends", {}).get("search_keys"),
+            per_key=registry.get("trends", {}).get("per_key", 5),
+        )
         stack = our_stack_scan(registry.get("security_scan", {}).get("targets", []))
-        json.dump({"releases": new_releases, "trends": trends, "stack": stack},
-                  open(args.collect_json, "w"), ensure_ascii=False, indent=2)
-        print(f"collected -> {args.collect_json} (releases={len(new_releases)}, cve_targets={len(_cve_targets(stack))})")
+        json.dump(
+            {"releases": new_releases, "trends": trends, "stack": stack},
+            open(args.collect_json, "w"),
+            ensure_ascii=False,
+            indent=2,
+        )
+        print(
+            f"collected -> {args.collect_json} (releases={len(new_releases)}, cve_targets={len(_cve_targets(stack))})"
+        )
         return
 
     if args.from_json:
         data = json.load(open(args.from_json))
-        print(_build_variant(args.variant or 1, data["releases"], data["trends"], data["stack"], as_json=args.json))
+        print(
+            _build_variant(
+                args.variant or 1,
+                data["releases"],
+                data["trends"],
+                data["stack"],
+                as_json=args.json,
+            )
+        )
         return
 
     if args.two_phase:
@@ -686,7 +946,9 @@ def main() -> None:
         )
         stack = our_stack_scan(registry.get("security_scan", {}).get("targets", []))
         if args.variant:
-            report = _build_variant(args.variant, new_releases, trends, stack, as_json=args.json)
+            report = _build_variant(
+                args.variant, new_releases, trends, stack, as_json=args.json
+            )
         else:
             report = build_two_phase(new_releases, trends, stack, as_json=args.json)
 
@@ -694,10 +956,14 @@ def main() -> None:
 
         if not args.dry_run:
             if args.save or args.telegram:
-                save_report(report, {"releases": new_releases, "trends": trends, "stack": stack})
+                save_report(
+                    report, {"releases": new_releases, "trends": trends, "stack": stack}
+                )
             # пишем state (чтобы релизы не дублировались)
             STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            json.dump({"releases": seen}, open(STATE_PATH, "w"), ensure_ascii=False, indent=2)
+            json.dump(
+                {"releases": seen}, open(STATE_PATH, "w"), ensure_ascii=False, indent=2
+            )
         if args.telegram and not args.dry_run:
             token = args.telegram_token or _tg_bot_token()
             if token:
@@ -710,7 +976,7 @@ def main() -> None:
     full = not any([args.pypi, args.hn, args.github, args.rss, args.cve])
     pypi_r = pypi_check() if (full or args.pypi) else None
     hn_r = hn_scan() if (full or args.hn) else None
-    if (full or args.github):
+    if full or args.github:
         reg = _load_json(REGISTRY_PATH)
         gh_r = github_trending(keys=reg.get("trends", {}).get("search_keys"))
     else:
